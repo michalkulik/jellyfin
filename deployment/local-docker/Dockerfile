@@ -1,28 +1,22 @@
 # syntax=docker/dockerfile:1
 #
-# Local, self-contained Jellyfin image build.
+# Local, self-contained Jellyfin image build (packaging stage).
 #
-# Unlike the official jellyfin-packaging Dockerfile (which installs Debian packages,
-# ffmpeg, Intel/Rockchip OpenCL runtimes, east-asian fonts, jemalloc, ...), this build
-# reuses the official runtime image as its final base and only replaces the server
-# binaries and the web client with locally built artifacts. This keeps the build fast
-# and reproducible on a developer machine while still producing a full, runnable image.
+# The server is published on the host with the .NET SDK (fast and reliable: it avoids
+# running the .NET build servers inside the buildkit sandbox) and the web client is
+# built inside a Node container. This image overlays both artifacts on top of the
+# official Jellyfin runtime image, which already provides ffmpeg, fonts, GPU/OpenCL
+# runtimes and the /jellyfin entrypoint.
 #
-# Required build context: the parent directory that contains BOTH repositories:
-#   <context>/jellyfin/       (this repository, the server)
-#   <context>/jellyfin-web/   (jellyfin web client, branch must match the server)
+# Build context: c:\sources (the parent folder of both repositories):
+#   <context>/jellyfin/                (server repository)
+#   <context>/jellyfin-web/            (web client repository)
+#   <context>/jellyfin-server-build/   (dotnet publish output; created by build.ps1)
 #
-# Build example (from the repository root):
-#   docker buildx build --platform linux/amd64 \
-#     -f deployment/local-docker/Dockerfile \
-#     -t jellyfin-local:12z \
-#     --build-arg BASE_IMAGE=jellyfin/jellyfin:unstable \
-#     ../..
-#
-# See README.md in this folder for the helper script.
+# Prefer the helper script (deployment/local-docker/build.ps1), which performs the
+# server publish first and then calls this Dockerfile.
 
 ARG NODE_VERSION=24
-ARG DOTNET_VERSION=10.0
 # Official Jellyfin image used for the runtime layer (ffmpeg, fonts, GPU runtimes, ...).
 # Keep this aligned with the server branch you are building (e.g. :unstable for 12.x).
 ARG BASE_IMAGE=jellyfin/jellyfin:unstable
@@ -55,36 +49,15 @@ RUN npm ci --no-audit --unsafe-perm \
     && npm run build:production
 
 #
-# Build the server (self-contained, linux-x64).
-#
-FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS server
-
-ARG DOTNET_ARCH=x64
-ARG CONFIG=Release
-
-WORKDIR /src
-ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
-
-COPY jellyfin/ ./
-
-RUN dotnet publish Jellyfin.Server/Jellyfin.Server.csproj \
-    --arch ${DOTNET_ARCH} \
-    --configuration ${CONFIG} \
-    --output=/out \
-    --self-contained \
-    -p:DebugSymbols=false \
-    -p:DebugType=none
-
-#
-# Final combined image: official runtime base + our server + our web client.
+# Final combined image: official runtime base + host-published server + built web client.
 #
 FROM ${BASE_IMAGE} AS final
 
 ARG JELLYFIN_VERSION=local
 
-# Overlay the locally built server binaries (the base image already carries the
-# matching runtime dependencies, ffmpeg and the /jellyfin entrypoint).
-COPY --from=server /out /jellyfin
+# Locally published server binaries (produced by `dotnet publish` in build.ps1).
+# The base image already carries the matching runtime dependencies and ffmpeg.
+COPY jellyfin-server-build/ /jellyfin
 
 # Overlay the locally built web client.
 COPY --from=web /src/dist /jellyfin/jellyfin-web

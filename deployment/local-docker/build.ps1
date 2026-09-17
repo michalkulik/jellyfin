@@ -4,9 +4,17 @@
     Builds a full, locally-built Jellyfin Docker image (server + web client).
 
 .DESCRIPTION
-    Requires Docker Desktop (Linux containers). The build context is the parent
-    directory containing both the "jellyfin" server repository and the
-    "jellyfin-web" repository.
+    Two-phase build:
+      1. The server is published locally with the .NET SDK (`dotnet publish`,
+         self-contained linux-x64). This is fast and avoids running the .NET build
+         servers inside a container, which can deadlock under buildkit.
+      2. The web client is built inside a Node container and both artifacts are
+         layered onto the official Jellyfin runtime image.
+
+    Docker may live on the Windows PATH (Docker Desktop) or inside WSL2; the script
+    detects the first available option. When Docker is only in WSL2 the build is
+    invoked through `wsl.exe` with the context and Dockerfile translated to
+    /mnt/<drive>/... paths.
 
 .PARAMETER Tag
     Image tag to produce. Default: jellyfin-local:<server branch>.
@@ -16,14 +24,17 @@
     server branch (e.g. jellyfin/jellyfin:unstable for 12.x, or a pinned tag).
 
 .PARAMETER WebRef
-    Git ref of jellyfin-web to check out when the repository is missing or
-    out of date. Default: release-12.z.
+    Git ref of jellyfin-web to check out when the repository is missing or out of
+    date. Default: release-12.z.
 
 .PARAMETER SaveTar
     If set, also export the image to this .tar file (for shipping to a server).
 
 .PARAMETER NoCache
-    Pass --no-cache to docker buildx.
+    Pass --no-cache to docker build.
+
+.PARAMETER SkipServerPublish
+    Reuse an existing server publish output instead of running `dotnet publish`.
 
 .EXAMPLE
     .\build.ps1 -Tag jellyfin-local:12z -SaveTar .\jellyfin-local-12z.tar
@@ -34,15 +45,11 @@ param(
     [string]$BaseImage = 'jellyfin/jellyfin:unstable',
     [string]$WebRef = 'release-12.z',
     [string]$SaveTar,
-    [switch]$NoCache
+    [switch]$NoCache,
+    [switch]$SkipServerPublish
 )
 
 $ErrorActionPreference = 'Stop'
-
-function Resolve-RepoRoot {
-    # This script lives in <repo>/deployment/local-docker/
-    return (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-}
 
 function Get-GitBranch([string]$Repo) {
     $branch = & git -C $Repo rev-parse --abbrev-ref HEAD 2>$null
@@ -53,28 +60,75 @@ function Get-GitBranch([string]$Repo) {
     return ($branch -replace '[^A-Za-z0-9._-]', '-')
 }
 
-$repoRoot = Resolve-RepoRoot
-$context = Split-Path -Parent $repoRoot
-$webRepo = Join-Path $context 'jellyfin-web'
+function ConvertTo-WslPath([string]$WindowsPath) {
+    $full = [System.IO.Path]::GetFullPath($WindowsPath)
+    if ($full -match '^([A-Za-z]):\\(.*)$') {
+        $drive = $Matches[1].ToLowerInvariant()
+        $rest = $Matches[2] -replace '\\', '/'
+        return "/mnt/$drive/$rest"
+    }
 
-if (-not $Tag) {
-    $Tag = 'jellyfin-local:' + (Get-GitBranch $repoRoot)
+    throw "Cannot convert path to WSL form: $WindowsPath"
 }
 
-Write-Host "Repository : $repoRoot"
+function Quote-Arg([string]$Value) {
+    if ($Value -match '[\s"]') { return '"' + ($Value -replace '"', '\"') + '"' }
+    return $Value
+}
+
+function Invoke-Docker([string[]]$DockerArgs) {
+    $docker = Get-Command docker -ErrorAction SilentlyContinue
+    if ($docker) {
+        Write-Host "Running: docker $($DockerArgs -join ' ')`n"
+        & docker @DockerArgs
+        return $LASTEXITCODE
+    }
+
+    if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
+        throw "Neither 'docker' (Windows) nor 'wsl' is available. Install Docker Desktop or Docker inside WSL2."
+    }
+
+    $joined = ($DockerArgs | ForEach-Object { Quote-Arg $_ }) -join ' '
+    Write-Host "Running in WSL: docker $joined`n"
+    & wsl -e bash -lc "docker $joined"
+    return $LASTEXITCODE
+}
+
+# --- Resolve locations -------------------------------------------------------
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$context = Split-Path -Parent $repoRoot
+$webRepo = Join-Path $context 'jellyfin-web'
+$serverOut = Join-Path $context 'jellyfin-server-build'
+$dockerfile = Join-Path $PSScriptRoot 'Dockerfile'
+$branch = Get-GitBranch $repoRoot
+
+if (-not $Tag) { $Tag = 'jellyfin-local:' + $branch }
+
+Write-Host "Repository : $repoRoot ($branch)"
 Write-Host "Context    : $context"
 Write-Host "Web repo   : $webRepo"
+Write-Host "Server out : $serverOut"
 Write-Host "Tag        : $Tag"
 Write-Host "Base image : $BaseImage"
 
-# --- Prerequisites -----------------------------------------------------------
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker is not available on PATH. Install Docker Desktop (Linux containers) first."
-}
+# --- Phase 1: publish the server locally -------------------------------------
+if (-not $SkipServerPublish) {
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        throw "dotnet SDK is required on the host to publish the server. Install the .NET SDK (see global.json)."
+    }
 
-& docker info *> $null
-if ($LASTEXITCODE -ne 0) {
-    throw "Cannot talk to the Docker daemon. Start Docker Desktop and try again."
+    if (Test-Path $serverOut) { Remove-Item -Recurse -Force $serverOut }
+
+    Write-Host "`nPublishing server (self-contained linux-x64) ..."
+    & dotnet publish (Join-Path $repoRoot 'Jellyfin.Server\Jellyfin.Server.csproj') `
+        -c Release -r linux-x64 --self-contained true `
+        -o $serverOut --nologo `
+        -p:DebugSymbols=false -p:DebugType=none
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed." }
+}
+else {
+    if (-not (Test-Path $serverOut)) { throw "-SkipServerPublish was set but $serverOut does not exist." }
+    Write-Host "`nReusing existing server publish at $serverOut"
 }
 
 # --- Ensure jellyfin-web is present and on the expected ref ------------------
@@ -118,30 +172,33 @@ if (-not (Test-Path $dockerIgnore)) {
     Write-Host "Created $dockerIgnore"
 }
 
-# --- Build -------------------------------------------------------------------
-$dockerfile = Join-Path $PSScriptRoot 'Dockerfile'
+# --- Phase 2: build the image ------------------------------------------------
+$useWsl = -not (Get-Command docker -ErrorAction SilentlyContinue)
+$dockerfileArg = if ($useWsl) { ConvertTo-WslPath $dockerfile } else { $dockerfile }
+$contextArg = if ($useWsl) { ConvertTo-WslPath $context } else { $context }
+
 $buildArgs = @(
-    'buildx', 'build',
-    '--platform', 'linux/amd64',
-    '-f', $dockerfile,
+    'build',
+    '-f', $dockerfileArg,
     '-t', $Tag,
     '--build-arg', "BASE_IMAGE=$BaseImage",
-    '--build-arg', ("JELLYFIN_VERSION=" + (Get-GitBranch $repoRoot)),
-    '--load',
-    $context
+    '--build-arg', "JELLYFIN_VERSION=$branch"
 )
-
 if ($NoCache) { $buildArgs += '--no-cache' }
+$buildArgs += $contextArg
 
-Write-Host "`nRunning: docker $($buildArgs -join ' ')`n"
-& docker @buildArgs
-if ($LASTEXITCODE -ne 0) { throw "Docker build failed." }
+Write-Host ''
+$exit = Invoke-Docker -DockerArgs $buildArgs
+if ($exit -ne 0) { throw "Docker build failed (exit $exit)." }
 
 Write-Host "`nBuilt image: $Tag"
 
+# --- Optional export ---------------------------------------------------------
 if ($SaveTar) {
-    Write-Host "Exporting image to $SaveTar ..."
-    & docker save -o $SaveTar $Tag
-    if ($LASTEXITCODE -ne 0) { throw "docker save failed." }
-    Write-Host "Saved: $SaveTar"
+    $saveFull = [System.IO.Path]::GetFullPath($SaveTar)
+    $saveArg = if ($useWsl) { ConvertTo-WslPath $saveFull } else { $saveFull }
+    Write-Host "Exporting image to $saveFull ..."
+    $saveExit = Invoke-Docker -DockerArgs @('save', '-o', $saveArg, $Tag)
+    if ($saveExit -ne 0) { throw "docker save failed." }
+    Write-Host "Saved: $saveFull"
 }
