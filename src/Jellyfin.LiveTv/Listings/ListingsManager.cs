@@ -30,6 +30,13 @@ public class ListingsManager : IListingsManager
     private readonly ConcurrentDictionary<string, EpgChannelData> _epgChannels = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Caches the raw provider channel list per listings provider id so that UI screens such as
+    /// the channel mapping dialog don't re-download/re-parse the (potentially huge) XMLTV file on
+    /// every open. Invalidated via <see cref="InvalidateListingsProviderCache"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, IReadOnlyList<ChannelInfo>> _providerChannelsCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="ListingsManager"/> class.
     /// </summary>
     /// <param name="logger">The <see cref="ILogger{TCategoryName}"/>.</param>
@@ -214,7 +221,7 @@ public class ListingsManager : IListingsManager
         var tunerChannels = await GetChannelsForListingsProvider(listingsProviderInfo, CancellationToken.None)
             .ConfigureAwait(false);
 
-        var providerChannels = await provider.GetChannels(listingsProviderInfo, default)
+        var providerChannels = await GetProviderChannels(provider, listingsProviderInfo, default)
             .ConfigureAwait(false);
 
         var mappings = listingsProviderInfo.ChannelMappings;
@@ -263,7 +270,7 @@ public class ListingsManager : IListingsManager
         var tunerChannels = await GetChannelsForListingsProvider(listingsProviderInfo, CancellationToken.None)
             .ConfigureAwait(false);
 
-        var providerChannels = await GetProvider(listingsProviderInfo.Type).GetChannels(listingsProviderInfo, default)
+        var providerChannels = await GetProviderChannels(GetProvider(listingsProviderInfo.Type), listingsProviderInfo, default)
             .ConfigureAwait(false);
 
         var tunerChannelMappings = tunerChannels
@@ -336,6 +343,7 @@ public class ListingsManager : IListingsManager
     {
         // Clear in-memory EPG channel cache for this provider
         _epgChannels.TryRemove(providerId, out _);
+        _providerChannelsCache.TryRemove(providerId, out _);
 
         // Provider IDs are generated as Guid.NewGuid().ToString("N")
         // reject anything else so we never use untrusted input in a path or log entry.
@@ -384,7 +392,36 @@ public class ListingsManager : IListingsManager
         result = new EpgChannelData(channels);
         _epgChannels.AddOrUpdate(info.Id, result, (_, _) => result);
 
+        // Cache the raw provider channels too so that UI screens (e.g. the channel mapping dialog)
+        // don't need to re-read/re-parse the XMLTV file.
+        _providerChannelsCache[info.Id] = channels.ToList();
+
         return result;
+    }
+
+    /// <summary>
+    /// Returns the provider channel list for a listing provider, serving from the in-memory cache
+    /// populated during guide refreshes when possible to avoid re-parsing slow/large XMLTV sources.
+    /// </summary>
+    private async Task<IReadOnlyList<ChannelInfo>> GetProviderChannels(
+        IListingsProvider provider,
+        ListingsProviderInfo info,
+        CancellationToken cancellationToken)
+    {
+        if (_providerChannelsCache.TryGetValue(info.Id, out var cached))
+        {
+            return cached;
+        }
+
+        var channels = await provider.GetChannels(info, cancellationToken).ConfigureAwait(false);
+        var list = channels.ToList();
+        foreach (var channel in list)
+        {
+            _logger.LogInformation("Found epg channel in {0} {1} {2} {3}", provider.Name, info.ListingsId, channel.Name, channel.Id);
+        }
+
+        _providerChannelsCache[info.Id] = list;
+        return list;
     }
 
     private static ChannelInfo? GetEpgChannelFromTunerChannel(
@@ -445,9 +482,11 @@ public class ListingsManager : IListingsManager
 
         if (!string.IsNullOrWhiteSpace(tunerChannel.Name))
         {
-            var normalizedName = EpgChannelData.NormalizeName(tunerChannel.Name);
-
-            var channel = epgChannelData.GetChannelByName(normalizedName);
+            // Alias-aware matcher. It checks every display-name alias of an EPG channel (primary
+            // name plus alternates) with a normalisation tolerant of feed-quality/country markers
+            // (PL:, HD, FHD, ...). Ambiguous matches are intentionally rejected so a tune channel
+            // is never silently paired with the wrong guide entry.
+            var channel = epgChannelData.MatchByQueryName(tunerChannel.Name);
             if (channel is not null)
             {
                 return channel;
@@ -457,7 +496,7 @@ public class ListingsManager : IListingsManager
         return null;
     }
 
-    private static TunerChannelMapping GetTunerChannelMapping(ChannelInfo tunerChannel, NameValuePair[] mappings, IList<ChannelInfo> providerChannels)
+    private static TunerChannelMapping GetTunerChannelMapping(ChannelInfo tunerChannel, NameValuePair[] mappings, IReadOnlyList<ChannelInfo> providerChannels)
     {
         var result = new TunerChannelMapping
         {

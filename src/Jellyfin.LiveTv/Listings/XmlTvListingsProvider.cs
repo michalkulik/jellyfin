@@ -10,6 +10,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml;
 using Jellyfin.Extensions;
 using Jellyfin.XmlTv;
 using Jellyfin.XmlTv.Entities;
@@ -367,15 +368,119 @@ namespace Jellyfin.LiveTv.Listings
             _logger.LogDebug("Opening XmlTvReader for {Path}", path);
             var reader = new XmlTvReader(path, GetLanguage(info));
             var results = reader.GetChannels();
+            var channels = results.ToList();
+
+            // The XmlTv package only exposes a single, language-selected display name per channel,
+            // but an XMLTV file often carries many <display-name> aliases (e.g. "AXN", "PL: AXN HD",
+            // "AXN PL", ...). Collect all of them so the EPG matcher can use every alias.
+            var allNames = ReadAllChannelNames(path);
 
             // Should this method be async?
-            return results.Select(c => new ChannelInfo
+            var resultChannels = channels
+                .Select(c =>
+                {
+                    var names = allNames.GetValueOrDefault(c.Id);
+                    var name = c.DisplayName ?? names?.FirstOrDefault();
+
+                    string[]? alternateNames = null;
+                    if (names is not null && names.Count > 1)
+                    {
+                        alternateNames = names
+                            .Where(n => !string.Equals(n.Trim(), name, StringComparison.OrdinalIgnoreCase))
+                            .Select(n => n.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+                    }
+
+                    return new ChannelInfo
+                    {
+                        Id = c.Id,
+                        Name = name,
+                        AlternateNames = alternateNames is null || alternateNames.Length == 0 ? Array.Empty<string>() : alternateNames,
+                        ImageUrl = string.IsNullOrEmpty(c.Icons.FirstOrDefault()?.Source) ? null : c.Icons.FirstOrDefault()!.Source,
+                        Number = string.IsNullOrWhiteSpace(c.Number) ? c.Id : c.Number
+                    };
+                })
+                .ToList();
+
+            return resultChannels;
+        }
+
+        /// <summary>
+        /// Reads every <c>&lt;display-name&gt;</c> of every <c>&lt;channel&gt;</c> from the XMLTV file,
+        /// preserving document order, using a streaming reader so the file is never fully loaded into memory.
+        /// </summary>
+        /// <param name="path">Path to the (uncompressed) XMLTV file.</param>
+        /// <returns>A map of channel id to its list of display names.</returns>
+        private static Dictionary<string, List<string>> ReadAllChannelNames(string path)
+        {
+            var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            using var stream = File.OpenRead(path);
+            using var xmlReader = XmlReader.Create(stream, new XmlReaderSettings
             {
-                Id = c.Id,
-                Name = c.DisplayName,
-                ImageUrl = string.IsNullOrEmpty(c.Icons.FirstOrDefault()?.Source) ? null : c.Icons.FirstOrDefault()!.Source,
-                Number = string.IsNullOrWhiteSpace(c.Number) ? c.Id : c.Number
-            }).ToList();
+                // The file is a locally configured/trusted XMLTV source; skip DTD for speed and safety
+                // and to tolerate malformed files that still contain useful <channel> data.
+                DtdProcessing = DtdProcessing.Ignore,
+                IgnoreComments = true,
+                IgnoreWhitespace = true
+            });
+
+            while (xmlReader.Read())
+            {
+                if (xmlReader.NodeType != XmlNodeType.Element || xmlReader.Name != "channel")
+                {
+                    continue;
+                }
+
+                string? id = xmlReader.GetAttribute("id");
+                if (id is null)
+                {
+                    continue;
+                }
+
+                var names = new List<string>();
+
+                // Move to first child of <channel>.
+                if (!xmlReader.Read())
+                {
+                    break;
+                }
+
+                while (!(xmlReader.NodeType == XmlNodeType.EndElement && xmlReader.Name == "channel"))
+                {
+                    if (xmlReader.NodeType == XmlNodeType.Element && xmlReader.Name == "display-name")
+                    {
+                        string text = xmlReader.ReadElementContentAsString();
+                        if (!string.IsNullOrWhiteSpace(text))
+                        {
+                            names.Add(text.Trim());
+                        }
+
+                        // ReadElementContentAsString advances past the <display-name> element.
+                        continue;
+                    }
+
+                    if (xmlReader.NodeType == XmlNodeType.Element && !xmlReader.IsEmptyElement)
+                    {
+                        // Skip nested element trees (icons, urls, ...) without recursively parsing them.
+                        xmlReader.Skip();
+                        continue;
+                    }
+
+                    if (!xmlReader.Read())
+                    {
+                        break;
+                    }
+                }
+
+                if (names.Count > 0)
+                {
+                    result[id] = names;
+                }
+            }
+
+            return result;
         }
     }
 }

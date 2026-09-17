@@ -2,6 +2,7 @@
 
 #pragma warning disable CS1591
 
+using System;
 using MediaBrowser.Model.LiveTv;
 
 namespace MediaBrowser.Controller.LiveTv
@@ -16,6 +17,13 @@ namespace MediaBrowser.Controller.LiveTv
         /// </summary>
         /// <value>The name.</value>
         public string Name { get; set; }
+
+        /// <summary>
+        /// Gets or sets alternative names (aliases) this channel is known by,
+        /// used as additional hints when matching the channel against EPG listings.
+        /// </summary>
+        /// <value>The alternative names.</value>
+        public string[] AlternateNames { get; set; } = Array.Empty<string>();
 
         /// <summary>
         /// Gets or sets the number.
