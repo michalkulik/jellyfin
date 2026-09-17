@@ -21,6 +21,8 @@ namespace Jellyfin.LiveTv.Listings;
 /// <inheritdoc />
 public class ListingsManager : IListingsManager
 {
+    private const int TunerChannelsCacheMinutes = 5;
+
     private readonly ILogger<ListingsManager> _logger;
     private readonly IConfigurationManager _config;
     private readonly ITaskManager _taskManager;
@@ -35,6 +37,13 @@ public class ListingsManager : IListingsManager
     /// every open. Invalidated via <see cref="InvalidateListingsProviderCache"/>.
     /// </summary>
     private readonly ConcurrentDictionary<string, IReadOnlyList<ChannelInfo>> _providerChannelsCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Short-lived cache of tuner channels per listings provider id. Opening the mapping dialog or
+    /// saving a single manual mapping must not re-download/re-parse the tuner playlist (which is
+    /// often a remote M3U URL) on every request. A short TTL keeps tuner edits reasonably fresh.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, (DateTime FetchedUtc, List<ChannelInfo> Channels)> _tunerChannelsCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ListingsManager"/> class.
@@ -226,9 +235,13 @@ public class ListingsManager : IListingsManager
 
         var mappings = listingsProviderInfo.ChannelMappings;
 
+        // Build the EPG lookup once and reuse it for every tuner channel; rebuilding it per channel
+        // is O(channels x display-names) and makes the dialog very slow on large XMLTV sources.
+        var epgChannelData = new EpgChannelData(providerChannels);
+
         return new ChannelMappingOptionsDto
         {
-            TunerChannels = tunerChannels.Select(i => GetTunerChannelMapping(i, mappings, providerChannels)).ToList(),
+            TunerChannels = tunerChannels.Select(i => GetTunerChannelMapping(i, mappings, epgChannelData)).ToList(),
             ProviderChannels = providerChannels.Select(i => new NameIdPair
             {
                 Name = i.Name,
@@ -273,12 +286,16 @@ public class ListingsManager : IListingsManager
         var providerChannels = await GetProviderChannels(GetProvider(listingsProviderInfo.Type), listingsProviderInfo, default)
             .ConfigureAwait(false);
 
-        var tunerChannelMappings = tunerChannels
-            .Select(i => GetTunerChannelMapping(i, listingsProviderInfo.ChannelMappings, providerChannels)).ToList();
+        var tunerChannel = tunerChannels.FirstOrDefault(i => string.Equals(i.Id, tunerChannelNumber, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ResourceNotFoundException($"Couldn't find tuner channel {tunerChannelNumber}");
+
+        // Only the requested channel is needed; avoid rebuilding mappings (and the EPG lookup) for
+        // every tuner channel on each manual change.
+        var mapping = GetTunerChannelMapping(tunerChannel, listingsProviderInfo.ChannelMappings, new EpgChannelData(providerChannels));
 
         _taskManager.CancelIfRunningAndQueue<RefreshGuideScheduledTask>();
 
-        return tunerChannelMappings.First(i => string.Equals(i.Id, tunerChannelNumber, StringComparison.OrdinalIgnoreCase));
+        return mapping;
     }
 
     private List<(IListingsProvider Provider, ListingsProviderInfo ProviderInfo)> GetListingProviders()
@@ -344,6 +361,7 @@ public class ListingsManager : IListingsManager
         // Clear in-memory EPG channel cache for this provider
         _epgChannels.TryRemove(providerId, out _);
         _providerChannelsCache.TryRemove(providerId, out _);
+        _tunerChannelsCache.TryRemove(providerId, out _);
 
         // Provider IDs are generated as Guid.NewGuid().ToString("N")
         // reject anything else so we never use untrusted input in a path or log entry.
@@ -496,7 +514,7 @@ public class ListingsManager : IListingsManager
         return null;
     }
 
-    private static TunerChannelMapping GetTunerChannelMapping(ChannelInfo tunerChannel, NameValuePair[] mappings, IReadOnlyList<ChannelInfo> providerChannels)
+    private static TunerChannelMapping GetTunerChannelMapping(ChannelInfo tunerChannel, NameValuePair[] mappings, EpgChannelData epgChannelData)
     {
         var result = new TunerChannelMapping
         {
@@ -509,7 +527,7 @@ public class ListingsManager : IListingsManager
             result.Name = tunerChannel.Number + " " + result.Name;
         }
 
-        var providerChannel = GetEpgChannelFromTunerChannel(mappings, tunerChannel, new EpgChannelData(providerChannels));
+        var providerChannel = GetEpgChannelFromTunerChannel(mappings, tunerChannel, epgChannelData);
         if (providerChannel is not null)
         {
             result.ProviderChannelName = providerChannel.Name;
@@ -521,6 +539,12 @@ public class ListingsManager : IListingsManager
 
     private async Task<List<ChannelInfo>> GetChannelsForListingsProvider(ListingsProviderInfo info, CancellationToken cancellationToken)
     {
+        if (_tunerChannelsCache.TryGetValue(info.Id, out var cached)
+            && DateTime.UtcNow - cached.FetchedUtc < TimeSpan.FromMinutes(TunerChannelsCacheMinutes))
+        {
+            return cached.Channels;
+        }
+
         var channels = new List<ChannelInfo>();
         foreach (var hostInstance in _tunerHostManager.TunerHosts)
         {
@@ -535,6 +559,8 @@ public class ListingsManager : IListingsManager
                 _logger.LogError(ex, "Error getting channels");
             }
         }
+
+        _tunerChannelsCache[info.Id] = (DateTime.UtcNow, channels);
 
         return channels;
     }
