@@ -155,6 +155,11 @@ public class GuideManager : IGuideManager
         {
             CleanDatabase(newChannelIdList.ToArray(), [BaseItemKind.LiveTvChannel], progress, cancellationToken);
             CleanDatabase(newProgramIdList.ToArray(), [BaseItemKind.LiveTvProgram], progress, cancellationToken);
+
+            // Removing items does not always reclaim their cached images (e.g. after aborting a
+            // refresh, or when a tuner is re-added with a different URL so all channel ids change),
+            // which used to leave gigabytes of orphaned poster.jpg folders behind.
+            PruneOrphanedMetadata();
         }
 
         var coreService = _liveTvManager.Services.OfType<DefaultLiveTvService>().FirstOrDefault();
@@ -174,6 +179,91 @@ public class GuideManager : IGuideManager
         return config.GuideDays.HasValue
             ? Math.Clamp(config.GuideDays.Value, 1, MaxGuideDays)
             : 7;
+    }
+
+    /// <summary>
+    /// Deletes cached live tv metadata (channel/program poster images) that no longer belongs to any
+    /// live tv item, reclaiming disk space leaked by previous guide refreshes.
+    /// </summary>
+    private void PruneOrphanedMetadata()
+    {
+        var metadataPath = BaseItem.ConfigurationManager?.ApplicationPaths.InternalMetadataPath;
+        if (string.IsNullOrEmpty(metadataPath))
+        {
+            return;
+        }
+
+        var liveTvMetadataPath = System.IO.Path.Combine(metadataPath, "livetv");
+        if (!System.IO.Directory.Exists(liveTvMetadataPath))
+        {
+            return;
+        }
+
+        var validIds = _itemRepo.GetItemIdsList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.LiveTvChannel, BaseItemKind.LiveTvProgram],
+            DtoOptions = new DtoOptions(false)
+        }).ToHashSet();
+
+        var removed = 0;
+        long reclaimed = 0;
+
+        // Avoid racing with images that a concurrent refresh may still be writing.
+        var cutoff = DateTime.UtcNow.AddMinutes(-10);
+
+        foreach (var directory in System.IO.Directory.EnumerateDirectories(liveTvMetadataPath))
+        {
+            var name = System.IO.Path.GetFileName(directory);
+            if (name.Length != 32 || !Guid.TryParseExact(name, "N", out var id) || validIds.Contains(id))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (System.IO.Directory.GetLastWriteTimeUtc(directory) > cutoff)
+                {
+                    continue;
+                }
+
+                reclaimed += GetDirectorySize(directory);
+                System.IO.Directory.Delete(directory, true);
+                removed++;
+            }
+            catch (System.IO.IOException ex)
+            {
+                _logger.LogDebug(ex, "Unable to remove orphaned metadata folder {Path}", directory);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogDebug(ex, "Unable to remove orphaned metadata folder {Path}", directory);
+            }
+        }
+
+        if (removed > 0)
+        {
+            _logger.LogInformation(
+                "Removed {Count} orphaned live tv metadata folders, reclaiming {Megabytes} MB",
+                removed,
+                reclaimed / 1024 / 1024);
+        }
+    }
+
+    private static long GetDirectorySize(string path)
+    {
+        long size = 0;
+        foreach (var file in System.IO.Directory.EnumerateFiles(path, "*", System.IO.SearchOption.AllDirectories))
+        {
+            try
+            {
+                size += new System.IO.FileInfo(file).Length;
+            }
+            catch (System.IO.IOException)
+            {
+            }
+        }
+
+        return size;
     }
 
     private async Task<(List<Guid> ChannelIds, List<Guid> ProgramIds, bool HasErrors)> RefreshChannelsInternal(ILiveTvService service, IProgress<double> progress, CancellationToken cancellationToken)
