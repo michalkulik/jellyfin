@@ -96,16 +96,21 @@ else {
 
 # --- .dockerignore at the context root (docker only reads it from there) -----
 $dockerIgnore = Join-Path $context '.dockerignore'
+# Note: jellyfin-web/.git is intentionally NOT excluded because its webpack build
+# runs `git describe` to stamp the commit SHA. The server repository does not need
+# its history for a self-contained publish, so it is excluded to shrink the context.
 $dockerIgnoreContent = @'
-# Build outputs and VCS metadata are not needed inside the image build.
-**/bin/
-**/obj/
-**/.git/
-**/node_modules/
-**/dist/
+# Server build outputs / VCS metadata.
+jellyfin/.git/
+jellyfin/m3u_tv/
+jellyfin/**/bin/
+jellyfin/**/obj/
+# Web client build outputs (recreated inside the image).
+jellyfin-web/node_modules/
+jellyfin-web/dist/
+# Editor metadata.
 **/.vs/
 **/.vscode/
-jellyfin/m3u_tv/
 '@
 
 if (-not (Test-Path $dockerIgnore)) {
