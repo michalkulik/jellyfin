@@ -276,10 +276,25 @@ public class GuideManager : IGuideManager
         // Resolve the already known channel instead of re-reading the tuner playlist and EPG; the
         // provider caches are used on the program lookup below.
         var internalId = _tvDtoService.GetInternalChannelId(service.Name, tunerChannelId);
-        if (_libraryManager.GetItemById(internalId) is not LiveTvChannel currentChannel)
+        var currentChannel = _libraryManager.GetItemById(internalId) as LiveTvChannel;
+
+        if (currentChannel is null)
         {
-            _logger.LogWarning("Cannot refresh channel {ChannelId}: it has not been imported yet", tunerChannelId);
-            return;
+            // The channel may not have been imported yet: M3U channel ids are derived from the
+            // (per-channel) playlist URLs and change when their tokens rotate, so the live channel
+            // list can contain ids that no library item maps to until the next full guide refresh.
+            // Import just this channel so the changed mapping takes effect immediately.
+            var channelInfo = (await service.GetChannelsAsync(cancellationToken).ConfigureAwait(false))
+                .FirstOrDefault(i => string.Equals(i.Id, tunerChannelId, StringComparison.OrdinalIgnoreCase));
+
+            if (channelInfo is null)
+            {
+                _logger.LogWarning("Cannot refresh channel {ChannelId}: it is no longer provided by the tuner", tunerChannelId);
+                return;
+            }
+
+            var parentFolder = _liveTvManager.GetInternalLiveTvFolder(cancellationToken);
+            currentChannel = await GetChannel(channelInfo, service.Name, parentFolder, cancellationToken).ConfigureAwait(false);
         }
 
         var guideDays = GetGuideDays();
