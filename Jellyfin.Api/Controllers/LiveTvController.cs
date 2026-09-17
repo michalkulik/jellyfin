@@ -1078,8 +1078,16 @@ public class LiveTvController : BaseJellyfinApiController
     [HttpPost("ChannelMappings")]
     [Authorize(Policy = Policies.RequiresElevation)]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public Task<TunerChannelMapping> SetChannelMapping([FromBody, Required] SetChannelMappingDto dto)
-        => _listingsManager.SetChannelMapping(dto.ProviderId, dto.TunerChannelId, dto.ProviderChannelId);
+    public async Task<TunerChannelMapping> SetChannelMapping([FromBody, Required] SetChannelMappingDto dto)
+    {
+        var mapping = await _listingsManager.SetChannelMapping(dto.ProviderId, dto.TunerChannelId, dto.ProviderChannelId).ConfigureAwait(false);
+
+        // Only the affected channel needs to be refreshed; a full guide refresh would re-download and
+        // re-process every channel, which takes a very long time for large EPG sources.
+        await _guideManager.RefreshChannel(dto.TunerChannelId, CancellationToken.None).ConfigureAwait(false);
+
+        return mapping;
+    }
 
     /// <summary>
     /// Get tuner host types.

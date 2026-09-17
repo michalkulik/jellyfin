@@ -260,42 +260,71 @@ public class ListingsManager : IListingsManager
         var listingsProviderInfo = config.ListingProviders
             .First(info => string.Equals(providerId, info.Id, StringComparison.OrdinalIgnoreCase));
 
-        var channelMappingExists = listingsProviderInfo.ChannelMappings
-            .Any(pair => string.Equals(pair.Name, tunerChannelNumber, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(pair.Value, providerChannelNumber, StringComparison.OrdinalIgnoreCase));
+        var tunerChannels = await GetChannelsForListingsProvider(listingsProviderInfo, CancellationToken.None)
+            .ConfigureAwait(false);
 
-        listingsProviderInfo.ChannelMappings = listingsProviderInfo.ChannelMappings
-            .Where(pair => !string.Equals(pair.Name, tunerChannelNumber, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var tunerChannel = tunerChannels.FirstOrDefault(i => string.Equals(i.Id, tunerChannelNumber, StringComparison.OrdinalIgnoreCase))
+            ?? tunerChannels.FirstOrDefault(i => string.Equals(i.TunerChannelId, tunerChannelNumber, StringComparison.OrdinalIgnoreCase))
+            ?? tunerChannels.FirstOrDefault(i => string.Equals(i.Number, tunerChannelNumber, StringComparison.OrdinalIgnoreCase));
 
-        if (!string.Equals(tunerChannelNumber, providerChannelNumber, StringComparison.OrdinalIgnoreCase)
-            && !channelMappingExists)
+        // M3U (and similar) channel ids are derived from the tuner/playlist URL and change whenever
+        // that URL or its token changes, which silently orphaned previously saved mappings. Store the
+        // mapping under the channel's stable provider id (tvg-id/Number) instead.
+        var mappingKey = tunerChannel is not null && !string.IsNullOrWhiteSpace(tunerChannel.TunerChannelId)
+            ? tunerChannel.TunerChannelId
+            : tunerChannel is not null && !string.IsNullOrWhiteSpace(tunerChannel.Number)
+                ? tunerChannel.Number
+                : tunerChannelNumber;
+
+        var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { mappingKey, tunerChannelNumber };
+        if (tunerChannel is not null)
         {
-            var newItem = new NameValuePair
+            if (!string.IsNullOrWhiteSpace(tunerChannel.Id))
             {
-                Name = tunerChannelNumber,
-                Value = providerChannelNumber
-            };
-            listingsProviderInfo.ChannelMappings = [.. listingsProviderInfo.ChannelMappings, newItem];
+                identifiers.Add(tunerChannel.Id);
+            }
+
+            if (!string.IsNullOrWhiteSpace(tunerChannel.TunerChannelId))
+            {
+                identifiers.Add(tunerChannel.TunerChannelId);
+            }
+
+            if (!string.IsNullOrWhiteSpace(tunerChannel.Number))
+            {
+                identifiers.Add(tunerChannel.Number);
+            }
+        }
+
+        // Drop any previous mapping for this tuner channel, including legacy id-keyed entries.
+        listingsProviderInfo.ChannelMappings = listingsProviderInfo.ChannelMappings
+            .Where(pair => !identifiers.Contains(pair.Name)).ToArray();
+
+        if (!string.IsNullOrWhiteSpace(providerChannelNumber))
+        {
+            listingsProviderInfo.ChannelMappings =
+            [
+                .. listingsProviderInfo.ChannelMappings,
+                new NameValuePair
+                {
+                    Name = mappingKey,
+                    Value = providerChannelNumber
+                }
+            ];
         }
 
         _config.SaveConfiguration("livetv", config);
 
-        var tunerChannels = await GetChannelsForListingsProvider(listingsProviderInfo, CancellationToken.None)
-            .ConfigureAwait(false);
+        if (tunerChannel is null)
+        {
+            throw new ResourceNotFoundException($"Couldn't find tuner channel {tunerChannelNumber}");
+        }
 
         var providerChannels = await GetProviderChannels(GetProvider(listingsProviderInfo.Type), listingsProviderInfo, default)
             .ConfigureAwait(false);
 
-        var tunerChannel = tunerChannels.FirstOrDefault(i => string.Equals(i.Id, tunerChannelNumber, StringComparison.OrdinalIgnoreCase))
-            ?? throw new ResourceNotFoundException($"Couldn't find tuner channel {tunerChannelNumber}");
-
         // Only the requested channel is needed; avoid rebuilding mappings (and the EPG lookup) for
         // every tuner channel on each manual change.
-        var mapping = GetTunerChannelMapping(tunerChannel, listingsProviderInfo.ChannelMappings, new EpgChannelData(providerChannels));
-
-        _taskManager.CancelIfRunningAndQueue<RefreshGuideScheduledTask>();
-
-        return mapping;
+        return GetTunerChannelMapping(tunerChannel, listingsProviderInfo.ChannelMappings, new EpgChannelData(providerChannels));
     }
 
     private List<(IListingsProvider Provider, ListingsProviderInfo ProviderInfo)> GetListingProviders()

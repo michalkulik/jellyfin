@@ -23,4 +23,16 @@ public interface IGuideManager
     /// <param name="cancellationToken">The <see cref="CancellationToken"/> to use.</param>
     /// <returns>Task representing the refresh operation.</returns>
     Task RefreshGuide(IProgress<double> progress, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Refresh the guide data for a single tuner channel.
+    /// </summary>
+    /// <remarks>
+    /// Used when the channel mapping changes so that only the affected channel is refreshed
+    /// instead of the entire guide.
+    /// </remarks>
+    /// <param name="tunerChannelId">The tuner channel identifier (as provided by the tuner host).</param>
+    /// <param name="cancellationToken">The <see cref="CancellationToken"/> to use.</param>
+    /// <returns>Task representing the refresh operation.</returns>
+    Task RefreshChannel(string tunerChannelId, CancellationToken cancellationToken);
 }

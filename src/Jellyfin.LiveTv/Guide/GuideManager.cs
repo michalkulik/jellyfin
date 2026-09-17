@@ -239,87 +239,8 @@ public class GuideManager : IGuideManager
                 var start = DateTime.UtcNow.AddHours(-1);
                 var end = start.AddDays(guideDays);
 
-                var isMovie = false;
-                var isSports = false;
-                var isNews = false;
-                var isKids = false;
-                var isSeries = false;
-
-                var channelPrograms = (await service.GetProgramsAsync(currentChannel.ExternalId, start, end, cancellationToken).ConfigureAwait(false)).ToList();
-
-                var existingPrograms = _libraryManager.GetItemList(new InternalItemsQuery
-                {
-                    IncludeItemTypes = [BaseItemKind.LiveTvProgram],
-                    ChannelIds = [currentChannel.Id],
-                    DtoOptions = new DtoOptions(true)
-                }).Cast<LiveTvProgram>().ToDictionary(i => i.Id);
-
-                var newPrograms = new List<LiveTvProgram>();
-                var updatedPrograms = new List<LiveTvProgram>();
-
-                foreach (var program in channelPrograms)
-                {
-                    var (programItem, isNew, isUpdated) = GetProgram(program, existingPrograms, currentChannel);
-                    var id = programItem.Id;
-                    if (isNew)
-                    {
-                        newPrograms.Add(programItem);
-                    }
-                    else if (isUpdated)
-                    {
-                        updatedPrograms.Add(programItem);
-                    }
-
-                    programIds.Add(programItem.Id);
-
-                    isMovie |= program.IsMovie;
-                    isSeries |= program.IsSeries;
-                    isSports |= program.IsSports;
-                    isNews |= program.IsNews;
-                    isKids |= program.IsKids;
-                }
-
-                _logger.LogDebug(
-                    "Channel {Name} has {NewCount} new programs and {UpdatedCount} updated programs",
-                    currentChannel.Name,
-                    newPrograms.Count,
-                    updatedPrograms.Count);
-
-                if (newPrograms.Count > 0)
-                {
-                    _libraryManager.CreateItems(newPrograms, currentChannel, cancellationToken);
-
-                    await PreCacheImages(newPrograms, maxCacheDate).ConfigureAwait(false);
-                }
-
-                if (updatedPrograms.Count > 0)
-                {
-                    await _libraryManager.UpdateItemsAsync(
-                        updatedPrograms,
-                        currentChannel,
-                        ItemUpdateType.MetadataImport,
-                        cancellationToken).ConfigureAwait(false);
-
-                    await PreCacheImages(updatedPrograms, maxCacheDate).ConfigureAwait(false);
-                }
-
-                currentChannel.IsMovie = isMovie;
-                currentChannel.IsNews = isNews;
-                currentChannel.IsSports = isSports;
-                currentChannel.IsSeries = isSeries;
-
-                if (isKids)
-                {
-                    currentChannel.AddTag("Kids");
-                }
-
-                await currentChannel.UpdateToRepositoryAsync(ItemUpdateType.MetadataImport, cancellationToken).ConfigureAwait(false);
-                await currentChannel.RefreshMetadata(
-                    new MetadataRefreshOptions(new DirectoryService(_fileSystem))
-                    {
-                        ForceSave = true
-                    },
-                    cancellationToken).ConfigureAwait(false);
+                var channelProgramIds = await RefreshChannelPrograms(service, currentChannel, start, end, maxCacheDate, cancellationToken).ConfigureAwait(false);
+                programIds.AddRange(channelProgramIds);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -339,6 +260,150 @@ public class GuideManager : IGuideManager
 
         progress.Report(100);
         return (channels, programIds, hasErrors);
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshChannel(string tunerChannelId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tunerChannelId);
+
+        var service = _liveTvManager.Services.OfType<DefaultLiveTvService>().FirstOrDefault();
+        if (service is null)
+        {
+            return;
+        }
+
+        // Resolve the already known channel instead of re-reading the tuner playlist and EPG; the
+        // provider caches are used on the program lookup below.
+        var internalId = _tvDtoService.GetInternalChannelId(service.Name, tunerChannelId);
+        if (_libraryManager.GetItemById(internalId) is not LiveTvChannel currentChannel)
+        {
+            _logger.LogWarning("Cannot refresh channel {ChannelId}: it has not been imported yet", tunerChannelId);
+            return;
+        }
+
+        var guideDays = GetGuideDays();
+        var start = DateTime.UtcNow.AddHours(-1);
+        var end = start.AddDays(guideDays);
+        var maxCacheDate = DateTime.UtcNow.AddDays(MaxCacheDays);
+
+        var programIds = await RefreshChannelPrograms(service, currentChannel, start, end, maxCacheDate, cancellationToken).ConfigureAwait(false);
+
+        // The full Refresh Guide cleans stale programs for every channel; a targeted refresh must do
+        // the same for just this channel so removed/replaced listings don't linger.
+        var stalePrograms = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.LiveTvProgram],
+            ChannelIds = [currentChannel.Id],
+            DtoOptions = new DtoOptions(false)
+        }).Cast<LiveTvProgram>().Where(i => !programIds.Contains(i.Id)).ToList();
+
+        foreach (var staleProgram in stalePrograms)
+        {
+            _libraryManager.DeleteItem(
+                staleProgram,
+                new DeleteOptions
+                {
+                    DeleteFileLocation = false,
+                    DeleteFromExternalProvider = false
+                },
+                false);
+        }
+
+        _logger.LogInformation("Refreshed guide data for channel {Name} ({Count} programs)", currentChannel.Name, programIds.Count);
+    }
+
+    private async Task<IReadOnlyCollection<Guid>> RefreshChannelPrograms(
+        ILiveTvService service,
+        LiveTvChannel currentChannel,
+        DateTime start,
+        DateTime end,
+        DateTime maxCacheDate,
+        CancellationToken cancellationToken)
+    {
+        var isMovie = false;
+        var isSports = false;
+        var isNews = false;
+        var isKids = false;
+        var isSeries = false;
+
+        var channelPrograms = (await service.GetProgramsAsync(currentChannel.ExternalId, start, end, cancellationToken).ConfigureAwait(false)).ToList();
+
+        var existingPrograms = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.LiveTvProgram],
+            ChannelIds = [currentChannel.Id],
+            DtoOptions = new DtoOptions(true)
+        }).Cast<LiveTvProgram>().ToDictionary(i => i.Id);
+
+        var newPrograms = new List<LiveTvProgram>();
+        var updatedPrograms = new List<LiveTvProgram>();
+        var programIds = new List<Guid>();
+
+        foreach (var program in channelPrograms)
+        {
+            var (programItem, isNew, isUpdated) = GetProgram(program, existingPrograms, currentChannel);
+            if (isNew)
+            {
+                newPrograms.Add(programItem);
+            }
+            else if (isUpdated)
+            {
+                updatedPrograms.Add(programItem);
+            }
+
+            programIds.Add(programItem.Id);
+
+            isMovie |= program.IsMovie;
+            isSeries |= program.IsSeries;
+            isSports |= program.IsSports;
+            isNews |= program.IsNews;
+            isKids |= program.IsKids;
+        }
+
+        _logger.LogDebug(
+            "Channel {Name} has {NewCount} new programs and {UpdatedCount} updated programs",
+            currentChannel.Name,
+            newPrograms.Count,
+            updatedPrograms.Count);
+
+        if (newPrograms.Count > 0)
+        {
+            _libraryManager.CreateItems(newPrograms, currentChannel, cancellationToken);
+
+            await PreCacheImages(newPrograms, maxCacheDate).ConfigureAwait(false);
+        }
+
+        if (updatedPrograms.Count > 0)
+        {
+            await _libraryManager.UpdateItemsAsync(
+                updatedPrograms,
+                currentChannel,
+                ItemUpdateType.MetadataImport,
+                cancellationToken).ConfigureAwait(false);
+
+            await PreCacheImages(updatedPrograms, maxCacheDate).ConfigureAwait(false);
+        }
+
+        currentChannel.IsMovie = isMovie;
+        currentChannel.IsNews = isNews;
+        currentChannel.IsSports = isSports;
+        currentChannel.IsSeries = isSeries;
+
+        if (isKids)
+        {
+            currentChannel.AddTag("Kids");
+        }
+
+        await currentChannel.UpdateToRepositoryAsync(ItemUpdateType.MetadataImport, cancellationToken).ConfigureAwait(false);
+        await currentChannel.RefreshMetadata(
+            new MetadataRefreshOptions(new DirectoryService(_fileSystem))
+            {
+                ForceSave = true
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return programIds;
     }
 
     private void CleanDatabase(Guid[] currentIdList, BaseItemKind[] validTypes, IProgress<double> progress, CancellationToken cancellationToken)
