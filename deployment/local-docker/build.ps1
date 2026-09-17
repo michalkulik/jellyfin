@@ -138,13 +138,23 @@ if (-not (Test-Path (Join-Path $webRepo '.git'))) {
     if ($LASTEXITCODE -ne 0) { throw "Failed to clone jellyfin-web." }
 }
 else {
-    Write-Host "Updating jellyfin-web ($WebRef) ..."
-    & git -C $webRepo fetch --depth 1 origin $WebRef
-    if ($LASTEXITCODE -eq 0) {
-        & git -C $webRepo checkout FETCH_HEAD
+    # Never discard local jellyfin-web work (e.g. local patches/commits). Only update the
+    # checkout when the working tree is clean, otherwise build exactly what is checked out.
+    $webDirty = (& git -C $webRepo status --porcelain) | Where-Object { $_ -notmatch '^\?\?' }
+    $webUnpushed = (& git -C $webRepo log --oneline "origin/$WebRef..HEAD" 2>$null)
+
+    if ($webDirty -or $webUnpushed) {
+        Write-Host "jellyfin-web has local changes/commits; building the current checkout and NOT updating it."
     }
     else {
-        Write-Warning "Could not fetch '$WebRef'; using the current jellyfin-web checkout."
+        Write-Host "Updating jellyfin-web ($WebRef) ..."
+        & git -C $webRepo fetch --depth 1 origin $WebRef
+        if ($LASTEXITCODE -eq 0) {
+            & git -C $webRepo checkout FETCH_HEAD
+        }
+        else {
+            Write-Warning "Could not fetch '$WebRef'; using the current jellyfin-web checkout."
+        }
     }
 }
 
