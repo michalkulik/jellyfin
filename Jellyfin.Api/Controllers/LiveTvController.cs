@@ -523,6 +523,7 @@ public class LiveTvController : BaseJellyfinApiController
     /// <param name="isSports">Optional. Filter for sports.</param>
     /// <param name="startIndex">Optional. The record index to start at. All items with a lower index will be dropped from the results.</param>
     /// <param name="limit">Optional. The maximum number of records to return.</param>
+    /// <param name="name">Optional. Filter by exact programme/series name.</param>
     /// <param name="sortBy">Optional. Specify one or more sort orders, comma delimited. Options: Name, StartDate.</param>
     /// <param name="sortOrder">Sort Order - Ascending,Descending.</param>
     /// <param name="genres">The genres to return guide information for.</param>
@@ -533,7 +534,6 @@ public class LiveTvController : BaseJellyfinApiController
     /// <param name="enableUserData">Optional. Include user data.</param>
     /// <param name="seriesTimerId">Optional. Filter by series timer id.</param>
     /// <param name="librarySeriesId">Optional. Filter by library series id.</param>
-    /// <param name="name">Optional. Filter by exact programme/series name.</param>
     /// <param name="fields">Optional. Specify additional fields of information to return in the output.</param>
     /// <param name="enableTotalRecordCount">Retrieve total record count.</param>
     /// <response code="200">Live tv epgs returned.</response>

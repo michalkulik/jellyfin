@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="3297">
+    <display-name>Test</display-name>
+  </channel>
+  <programme start="20221104020000 +0200" stop="20221104023000 +0200" channel="3297">
+    <title>A_onscreen_s1e2</title>
+    <episode-num system="onscreen">S1E2</episode-num>
+  </programme>
+  <programme start="20221104023000 +0200" stop="20221104030000 +0200" channel="3297">
+    <title>B_onscreen_padded</title>
+    <episode-num system="onscreen">S01E02</episode-num>
+  </programme>
+  <programme start="20221104030000 +0200" stop="20221104033000 +0200" channel="3297">
+    <title>C_onscreen_x</title>
+    <episode-num system="onscreen">1x2</episode-num>
+  </programme>
+  <programme start="20221104033000 +0200" stop="20221104040000 +0200" channel="3297">
+    <title>D_xmltvns</title>
+    <episode-num system="xmltv_ns">0.1.</episode-num>
+  </programme>
+  <programme start="20221104040000 +0200" stop="20221104043000 +0200" channel="3297">
+    <title>E_sxxexx</title>
+    <episode-num system="SxxExx">S1E2</episode-num>
+  </programme>
+  <programme start="20221104043000 +0200" stop="20221104050000 +0200" channel="3297">
+    <title>F_progid</title>
+    <episode-num system="dd_progid">EP00001234.0001</episode-num>
+  </programme>
+</tv>

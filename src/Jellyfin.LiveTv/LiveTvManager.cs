@@ -549,6 +549,7 @@ namespace Jellyfin.LiveTv
 
                 dto.StartDate = program.StartDate;
                 dto.EpisodeTitle = program.EpisodeTitle;
+                dto.SeriesName = program.SeriesName;
                 dto.IsRepeat |= program.IsRepeat;
                 dto.IsMovie |= program.IsMovie;
                 dto.IsSeries |= program.IsSeries;

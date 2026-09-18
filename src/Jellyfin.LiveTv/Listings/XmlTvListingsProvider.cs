@@ -8,9 +8,11 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
+using System.Xml.Linq;
 using Jellyfin.Extensions;
 using Jellyfin.XmlTv;
 using Jellyfin.XmlTv.Entities;
@@ -36,6 +38,7 @@ namespace Jellyfin.LiveTv.Listings
         private readonly ILogger<XmlTvListingsProvider> _logger;
 
         private readonly ConcurrentDictionary<string, DateTime> _lastDownloadFailures = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, (DateTime LastWriteUtc, Dictionary<string, (int? Season, int? Episode)> Data)> _onscreenEpisodeCache = new(StringComparer.Ordinal);
 
         public XmlTvListingsProvider(
             IServerConfigurationManager config,
@@ -224,13 +227,22 @@ namespace Jellyfin.LiveTv.Listings
             _logger.LogDebug("Opening XmlTvReader for {Path}", path);
             var reader = new XmlTvReader(path, GetLanguage(info));
 
+            // The XMLTV reader only understands <episode-num> values expressed in the xmltv_ns or
+            // SxxExx systems. Many providers (e.g. epg.ovh) instead use system="onscreen" (e.g. "S2E23"),
+            // which the reader silently drops. Read those separately so programmes without a
+            // <sub-title> can still be recognised as series episodes.
+            var onscreenEpisodes = GetOnscreenEpisodeData(path);
+
             return reader.GetProgrammes(channelId, startDateUtc, endDateUtc, cancellationToken)
-                        .Select(p => GetProgramInfoWithEtag(p, info));
+                        .Select(p => GetProgramInfoWithEtag(p, info, onscreenEpisodes));
         }
 
-        private ProgramInfo GetProgramInfoWithEtag(XmlTvProgram program, ListingsProviderInfo info)
+        private ProgramInfo GetProgramInfoWithEtag(
+            XmlTvProgram program,
+            ListingsProviderInfo info,
+            IReadOnlyDictionary<string, (int? Season, int? Episode)> onscreenEpisodes)
         {
-            var programInfo = GetProgramInfo(program, info);
+            var programInfo = GetProgramInfo(program, info, onscreenEpisodes);
 
             if (XmlTvProgramEtag.TryCreate(programInfo, out var etag, out var reason))
             {
@@ -250,7 +262,10 @@ namespace Jellyfin.LiveTv.Listings
             return programInfo;
         }
 
-        private static ProgramInfo GetProgramInfo(XmlTvProgram program, ListingsProviderInfo info)
+        private static ProgramInfo GetProgramInfo(
+            XmlTvProgram program,
+            ListingsProviderInfo info,
+            IReadOnlyDictionary<string, (int? Season, int? Episode)> onscreenEpisodes)
         {
             string? episodeTitle = program.Episode?.Title;
             var programCategories = program.Categories.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
@@ -262,23 +277,33 @@ namespace Jellyfin.LiveTv.Listings
 
             // Some XMLTV sources (e.g. epg.ovh) only provide episode numbers through
             // <episode-num system="onscreen">S1E3</episode-num>, which the XMLTV reader ignores.
-            // For those, the presence of a <sub-title> (episode title) is the only reliable signal
-            // that a programme belongs to a series. Without treating it as a series Jellyfin can't
-            // group episodes or offer series recording at all.
-            var isSeries = program.Episode?.Episode is not null || !string.IsNullOrEmpty(episodeTitle);
+            // The reader also ignores programmes that carry no <sub-title> at all, even though the
+            // on-screen episode number clearly marks them as series episodes. Fall back to the
+            // separately parsed on-screen data in that case.
+            var seasonNumber = program.Episode?.Series;
+            var episodeNumber = program.Episode?.Episode;
+
+            if (episodeNumber is null
+                && onscreenEpisodes.TryGetValue(BuildProgramKey(program.ChannelId, program.StartDate), out var onscreenEpisode))
+            {
+                seasonNumber = onscreenEpisode.Season;
+                episodeNumber = onscreenEpisode.Episode;
+            }
+
+            var isSeries = episodeNumber is not null || !string.IsNullOrEmpty(episodeTitle);
 
             var programInfo = new ProgramInfo
             {
                 ChannelId = program.ChannelId,
                 EndDate = program.EndDate.UtcDateTime,
-                EpisodeNumber = program.Episode?.Episode,
+                EpisodeNumber = episodeNumber,
                 EpisodeTitle = episodeTitle,
                 Genres = programCategories,
                 StartDate = program.StartDate.UtcDateTime,
                 Name = program.Title,
                 Overview = program.Description,
                 ProductionYear = program.CopyrightDate?.Year,
-                SeasonNumber = program.Episode?.Series,
+                SeasonNumber = seasonNumber,
                 IsSeries = isSeries,
                 IsRepeat = program.IsPreviouslyShown && !program.IsNew,
                 IsPremiere = program.Premiere is not null,
@@ -488,6 +513,180 @@ namespace Jellyfin.LiveTv.Listings
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Builds a stable key that identifies a single programme by its channel and start instant.
+        /// </summary>
+        /// <param name="channelId">The channel id.</param>
+        /// <param name="start">The programme start.</param>
+        /// <returns>The lookup key.</returns>
+        private static string BuildProgramKey(string channelId, DateTimeOffset start)
+            => string.Concat(channelId, "|", start.UtcDateTime.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture));
+
+        private Dictionary<string, (int? Season, int? Episode)> GetOnscreenEpisodeData(string path)
+        {
+            var lastWriteUtc = File.GetLastWriteTimeUtc(path);
+            if (_onscreenEpisodeCache.TryGetValue(path, out var cached) && cached.LastWriteUtc == lastWriteUtc)
+            {
+                return cached.Data;
+            }
+
+            var data = ReadOnscreenEpisodeData(path);
+            _onscreenEpisodeCache[path] = (lastWriteUtc, data);
+            return data;
+        }
+
+        /// <summary>
+        /// Reads the on-screen (<c>system="onscreen"</c>) episode numbers of every programme that has no
+        /// <c>&lt;sub-title&gt;</c>, using a streaming reader so the file is never fully loaded into memory.
+        /// Programmes with a sub-title are already recognised as series by the XMLTV reader.
+        /// </summary>
+        /// <param name="path">Path to the (uncompressed) XMLTV file.</param>
+        /// <returns>A map of programme key to its parsed season/episode numbers.</returns>
+        private static Dictionary<string, (int? Season, int? Episode)> ReadOnscreenEpisodeData(string path)
+        {
+            var result = new Dictionary<string, (int? Season, int? Episode)>(StringComparer.Ordinal);
+
+            using var stream = File.OpenRead(path);
+            using var xmlReader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Ignore,
+                IgnoreComments = true,
+                IgnoreWhitespace = true
+            });
+
+            while (xmlReader.Read())
+            {
+                if (xmlReader.NodeType != XmlNodeType.Element || xmlReader.Name != "programme" || xmlReader.IsEmptyElement)
+                {
+                    continue;
+                }
+
+                string? channelId = xmlReader.GetAttribute("channel");
+                string? start = xmlReader.GetAttribute("start");
+                if (channelId is null || start is null)
+                {
+                    continue;
+                }
+
+                var startOffset = ParseXmlTvStart(start);
+                if (startOffset is null)
+                {
+                    continue;
+                }
+
+                XElement? onscreen = null;
+                using (var subtree = xmlReader.ReadSubtree())
+                {
+                    var element = XElement.Load(subtree);
+
+                    // A sub-title already marks the programme as a series for the XMLTV reader.
+                    if (element.Element("sub-title") is not null)
+                    {
+                        continue;
+                    }
+
+                    onscreen = element.Elements("episode-num")
+                        .FirstOrDefault(e => string.Equals((string?)e.Attribute("system"), "onscreen", StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (onscreen is null)
+                {
+                    continue;
+                }
+
+                ParseOnscreenEpisode(onscreen.Value, out var season, out var episode);
+                result[BuildProgramKey(channelId, startOffset.Value)] = (season, episode);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Parses the subset of XMLTV date formats ("yyyyMMddHHmmss[ +HHMM]") used by listings providers.
+        /// </summary>
+        /// <param name="value">The raw start attribute value.</param>
+        /// <returns>The parsed start, or <c>null</c> when the value cannot be parsed.</returns>
+        private static DateTimeOffset? ParseXmlTvStart(string value)
+        {
+            var parts = value.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                return null;
+            }
+
+            var digits = parts[0];
+            if (digits.Length is < 4 or > 14 || !digits.All(char.IsAsciiDigit))
+            {
+                return null;
+            }
+
+            if (!DateTime.TryParseExact(
+                    digits.PadRight(14, '0'),
+                    "yyyyMMddHHmmss",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var dateTime))
+            {
+                return null;
+            }
+
+            var offset = TimeSpan.Zero;
+            if (parts.Length > 1 && parts[1].Length > 0)
+            {
+                bool negative = parts[1][0] == '-';
+                var offsetDigits = parts[1].TrimStart('+', '-').PadRight(4, '0');
+                if (offsetDigits.Length != 4
+                    || !int.TryParse(offsetDigits.AsSpan(0, 2), NumberStyles.None, CultureInfo.InvariantCulture, out var hours)
+                    || !int.TryParse(offsetDigits.AsSpan(2, 2), NumberStyles.None, CultureInfo.InvariantCulture, out var minutes))
+                {
+                    return null;
+                }
+
+                offset = new TimeSpan(negative ? -hours : hours, negative ? -minutes : minutes, 0);
+            }
+
+            return new DateTimeOffset(DateTime.SpecifyKind(dateTime, DateTimeKind.Unspecified), offset);
+        }
+
+        /// <summary>
+        /// Parses common on-screen episode notations such as "S2E23" or "2x23".
+        /// </summary>
+        /// <param name="value">The on-screen episode-num value.</param>
+        /// <param name="season">The parsed season number, if any.</param>
+        /// <param name="episode">The parsed episode number, if any.</param>
+        private static void ParseOnscreenEpisode(string? value, out int? season, out int? episode)
+        {
+            season = null;
+            episode = null;
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            var trimmed = value.Trim();
+            var match = Regex.Match(trimmed, @"^[Ss]?(?<season>\d+)\s*[Ee](?<episode>\d+)$");
+            if (!match.Success)
+            {
+                match = Regex.Match(trimmed, @"^(?<season>\d+)\s*[xX]\s*(?<episode>\d+)$");
+            }
+
+            if (!match.Success)
+            {
+                return;
+            }
+
+            if (int.TryParse(match.Groups["season"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var seasonNumber))
+            {
+                season = seasonNumber;
+            }
+
+            if (int.TryParse(match.Groups["episode"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var episodeNumber))
+            {
+                episode = episodeNumber;
+            }
         }
     }
 }
