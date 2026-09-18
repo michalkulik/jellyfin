@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.BaseItemManager;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
@@ -695,7 +696,8 @@ namespace Jellyfin.Providers.Tests.Manager
                 Mock.Of<ILyricManager>(),
                 Mock.Of<IMemoryCache>(),
                 Mock.Of<IMediaSegmentManager>(),
-                Mock.Of<ISimilarItemsManager>());
+                Mock.Of<ISimilarItemsManager>(),
+                Mock.Of<IImageProcessor>());
 
             return providerManager;
         }

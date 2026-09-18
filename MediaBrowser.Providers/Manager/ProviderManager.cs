@@ -19,6 +19,7 @@ using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.BaseItemManager;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
@@ -68,6 +69,7 @@ namespace MediaBrowser.Providers.Manager
         private readonly IMemoryCache _memoryCache;
         private readonly IMediaSegmentManager _mediaSegmentManager;
         private readonly ISimilarItemsManager _similarItemsManager;
+        private readonly IImageProcessor _imageProcessor;
         private readonly AsyncKeyedLocker<string> _imageSaveLock = new(o =>
         {
             o.PoolSize = 20;
@@ -107,6 +109,7 @@ namespace MediaBrowser.Providers.Manager
         /// <param name="memoryCache">The memory cache.</param>
         /// <param name="mediaSegmentManager">The media segment manager.</param>
         /// <param name="similarItemsManager">The similar items manager.</param>
+        /// <param name="imageProcessor">The image processor.</param>
         public ProviderManager(
             IHttpClientFactory httpClientFactory,
             ISubtitleManager subtitleManager,
@@ -120,13 +123,15 @@ namespace MediaBrowser.Providers.Manager
             ILyricManager lyricManager,
             IMemoryCache memoryCache,
             IMediaSegmentManager mediaSegmentManager,
-            ISimilarItemsManager similarItemsManager)
+            ISimilarItemsManager similarItemsManager,
+            IImageProcessor imageProcessor)
         {
             _logger = logger;
             _httpClientFactory = httpClientFactory;
             _configurationManager = configurationManager;
             _libraryMonitor = libraryMonitor;
             _fileSystem = fileSystem;
+            _imageProcessor = imageProcessor;
             _appPaths = appPaths;
             _libraryManager = libraryManager;
             _subtitleManager = subtitleManager;
@@ -259,7 +264,7 @@ namespace MediaBrowser.Providers.Manager
         /// <inheritdoc/>
         public Task SaveImage(BaseItem item, Stream source, string mimeType, ImageType type, int? imageIndex, CancellationToken cancellationToken)
         {
-            return new ImageSaver(_configurationManager, _libraryMonitor, _fileSystem, _logger).SaveImage(item, source, mimeType, type, imageIndex, cancellationToken);
+            return new ImageSaver(_configurationManager, _libraryMonitor, _fileSystem, _imageProcessor, _logger).SaveImage(item, source, mimeType, type, imageIndex, cancellationToken);
         }
 
         /// <inheritdoc/>
@@ -273,7 +278,7 @@ namespace MediaBrowser.Providers.Manager
             try
             {
                 var fileStream = AsyncFile.OpenRead(source);
-                await new ImageSaver(_configurationManager, _libraryMonitor, _fileSystem, _logger)
+                await new ImageSaver(_configurationManager, _libraryMonitor, _fileSystem, _imageProcessor, _logger)
                     .SaveImage(item, fileStream, mimeType, type, imageIndex, saveLocallyWithMedia, cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -293,7 +298,7 @@ namespace MediaBrowser.Providers.Manager
         /// <inheritdoc/>
         public Task SaveImage(Stream source, string mimeType, string path)
         {
-            return new ImageSaver(_configurationManager, _libraryMonitor, _fileSystem, _logger)
+            return new ImageSaver(_configurationManager, _libraryMonitor, _fileSystem, _imageProcessor, _logger)
                 .SaveImage(source, path);
         }
 

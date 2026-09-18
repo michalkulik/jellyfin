@@ -12,11 +12,14 @@ using System.Threading.Tasks;
 using Jellyfin.Extensions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.IO;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Configuration;
+using MediaBrowser.Model.Drawing;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Net;
@@ -43,6 +46,7 @@ namespace MediaBrowser.Providers.Manager
         /// </summary>
         private readonly ILibraryMonitor _libraryMonitor;
         private readonly IFileSystem _fileSystem;
+        private readonly IImageProcessor _imageProcessor;
         private readonly ILogger _logger;
 
         /// <summary>
@@ -51,12 +55,14 @@ namespace MediaBrowser.Providers.Manager
         /// <param name="config">The config.</param>
         /// <param name="libraryMonitor">The directory watchers.</param>
         /// <param name="fileSystem">The file system.</param>
+        /// <param name="imageProcessor">The image processor.</param>
         /// <param name="logger">The logger.</param>
-        public ImageSaver(IServerConfigurationManager config, ILibraryMonitor libraryMonitor, IFileSystem fileSystem, ILogger logger)
+        public ImageSaver(IServerConfigurationManager config, ILibraryMonitor libraryMonitor, IFileSystem fileSystem, IImageProcessor imageProcessor, ILogger logger)
         {
             _config = config;
             _libraryMonitor = libraryMonitor;
             _fileSystem = fileSystem;
+            _imageProcessor = imageProcessor;
             _logger = logger;
         }
 
@@ -169,6 +175,11 @@ namespace MediaBrowser.Providers.Manager
                     var savedPath = await SaveImageToLocation(source, paths[i], retryPath, cancellationToken).ConfigureAwait(false);
                     savedPaths.Add(savedPath);
                 }
+            }
+
+            foreach (var savedPath in savedPaths)
+            {
+                await EnforceLiveTvImageSizeLimit(item, savedPath, cancellationToken).ConfigureAwait(false);
             }
 
             // Set the path into the item
@@ -324,6 +335,52 @@ namespace MediaBrowser.Providers.Manager
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error setting hidden attribute on {0}", path);
+            }
+        }
+
+        /// <summary>
+        /// Live TV artwork is fetched from external EPG/tuner sources and individual images are
+        /// frequently several megabytes. Keeping the originals bloats the metadata folder with very
+        /// little visual benefit, so the stored files are progressively re-encoded until they fit
+        /// the byte budget.
+        /// </summary>
+        /// <param name="item">The item the image belongs to.</param>
+        /// <param name="path">The path of the saved image.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        private async Task EnforceLiveTvImageSizeLimit(BaseItem item, string path, CancellationToken cancellationToken)
+        {
+            if (item is not LiveTvProgram && item is not LiveTvChannel)
+            {
+                return;
+            }
+
+            // Only rewrite images that live in the server metadata folder, never files next to the media.
+            if (!path.Contains(_config.ApplicationPaths.InternalMetadataPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var fileInfo = _fileSystem.GetFileInfo(path);
+            if (!fileInfo.Exists || fileInfo.Length <= ImageSizeReducer.DefaultMaxSizeBytes)
+            {
+                return;
+            }
+
+            _libraryMonitor.ReportFileSystemChangeBeginning(path);
+            try
+            {
+                if (await ImageSizeReducer.ReduceAsync(_imageProcessor, item, path, ImageSizeReducer.DefaultMaxSizeBytes, cancellationToken).ConfigureAwait(false))
+                {
+                    _logger.LogDebug("Shrunk Live TV image {Path} to {Size} bytes", path, _fileSystem.GetFileInfo(path).Length);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unable to shrink Live TV image {Path}", path);
+            }
+            finally
+            {
+                _libraryMonitor.ReportFileSystemChangeComplete(path, false);
             }
         }
 
