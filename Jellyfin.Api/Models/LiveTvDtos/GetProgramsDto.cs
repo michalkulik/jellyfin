@@ -148,6 +148,11 @@ public class GetProgramsDto
     public string? SeriesTimerId { get; set; }
 
     /// <summary>
+    /// Gets or sets filter by exact programme/series name.
+    /// </summary>
+    public string? Name { get; set; }
+
+    /// <summary>
     /// Gets or sets filter by library series id.
     /// </summary>
     public Guid? LibrarySeriesId { get; set; }

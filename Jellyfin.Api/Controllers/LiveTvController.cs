@@ -533,6 +533,7 @@ public class LiveTvController : BaseJellyfinApiController
     /// <param name="enableUserData">Optional. Include user data.</param>
     /// <param name="seriesTimerId">Optional. Filter by series timer id.</param>
     /// <param name="librarySeriesId">Optional. Filter by library series id.</param>
+    /// <param name="name">Optional. Filter by exact programme/series name.</param>
     /// <param name="fields">Optional. Specify additional fields of information to return in the output.</param>
     /// <param name="enableTotalRecordCount">Retrieve total record count.</param>
     /// <response code="200">Live tv epgs returned.</response>
@@ -558,6 +559,7 @@ public class LiveTvController : BaseJellyfinApiController
         [FromQuery] bool? isSports,
         [FromQuery] int? startIndex,
         [FromQuery] int? limit,
+        [FromQuery] string? name,
         [FromQuery, ModelBinder(typeof(CommaDelimitedCollectionModelBinder))] ItemSortBy[] sortBy,
         [FromQuery, ModelBinder(typeof(CommaDelimitedCollectionModelBinder))] SortOrder[] sortOrder,
         [FromQuery, ModelBinder(typeof(PipeDelimitedCollectionModelBinder))] string[] genres,
@@ -596,7 +598,8 @@ public class LiveTvController : BaseJellyfinApiController
             IsSports = isSports,
             SeriesTimerId = seriesTimerId,
             Genres = genres,
-            GenreIds = genreIds
+            GenreIds = genreIds,
+            Name = name
         };
 
         if (!librarySeriesId.IsNullOrEmpty())
@@ -650,7 +653,8 @@ public class LiveTvController : BaseJellyfinApiController
             IsSports = body.IsSports,
             SeriesTimerId = body.SeriesTimerId,
             Genres = body.Genres ?? [],
-            GenreIds = body.GenreIds ?? []
+            GenreIds = body.GenreIds ?? [],
+            Name = body.Name
         };
 
         if (!body.LibrarySeriesId.IsNullOrEmpty())
