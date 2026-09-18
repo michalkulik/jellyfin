@@ -61,6 +61,7 @@ using MediaBrowser.Controller.Chapters;
 using MediaBrowser.Controller.ClientEvent;
 using MediaBrowser.Controller.Collections;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Controller.Downloads;
 using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
@@ -628,6 +629,8 @@ namespace Emby.Server.Implementations
             serviceCollection.AddSingleton<IAttachmentExtractor, MediaBrowser.MediaEncoding.Attachments.AttachmentExtractor>();
 
             serviceCollection.AddSingleton<ITranscodeManager, TranscodeManager>();
+            serviceCollection.AddSingleton<ITranscodeDownloadManager, TranscodeDownloadManager>();
+            serviceCollection.AddSingleton<ITranscodeDownloadManager, TranscodeDownloadManager>();
             serviceCollection.AddScoped<MediaInfoHelper>();
             serviceCollection.AddScoped<AudioHelper>();
             serviceCollection.AddScoped<DynamicHlsHelper>();
