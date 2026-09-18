@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
+using Jellyfin.Extensions;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
@@ -90,6 +91,11 @@ public class DownloadController : BaseJellyfinApiController
         CancellationToken cancellationToken)
     {
         var userId = User.GetUserId();
+        if (userId.IsEmpty())
+        {
+            return Unauthorized();
+        }
+
         var user = _userManager.GetUserById(userId);
         if (user is null)
         {
