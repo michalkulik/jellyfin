@@ -714,13 +714,9 @@ public class GuideManager : IGuideManager
         }
 
         var isSeries = info.IsSeries || !string.IsNullOrEmpty(info.EpisodeTitle);
-        if (isSeries)
+        if (isSeries || !string.IsNullOrEmpty(info.EpisodeTitle))
         {
-            if (!string.Equals(item.SeriesName, info.Name, StringComparison.Ordinal))
-            {
-                item.SeriesName = info.Name;
-                forceUpdate = true;
-            }
+            item.SeriesName = info.Name;
         }
 
         var tags = new List<string>();
