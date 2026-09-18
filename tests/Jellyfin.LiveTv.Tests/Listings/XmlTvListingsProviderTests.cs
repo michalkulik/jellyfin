@@ -134,6 +134,30 @@ public class XmlTvListingsProviderTests
     }
 
     [Fact]
+    public async Task GetProgramsAsync_OnscreenEpisodeWithSubTitle_IsDetectedAsSeries()
+    {
+        // Sources such as epg.ovh only expose episode numbers as system="onscreen" (e.g. S1E3),
+        // which the XMLTV reader ignores. The sub-title must still make these programmes series so
+        // that series grouping and series recording work.
+        var info = new ListingsProviderInfo()
+        {
+            Id = "onscreen-subtitle",
+            Path = "Test Data/LiveTv/Listings/XmlTv/onscreen-subtitle.xml"
+        };
+
+        var startDate = new DateTime(2022, 11, 4, 0, 0, 0, DateTimeKind.Utc);
+        var programs = (await _xmlTvListingsProvider.GetProgramsAsync(info, "3297", startDate, startDate.AddDays(1), CancellationToken.None)).ToList();
+
+        Assert.Equal(2, programs.Count);
+        Assert.All(programs, p => Assert.True(p.IsSeries));
+        Assert.All(programs, p => Assert.False(string.IsNullOrEmpty(p.SeriesId)));
+        Assert.All(programs, p => Assert.False(string.IsNullOrEmpty(p.EpisodeTitle)));
+
+        // Both episodes must resolve to the same series id so they group together.
+        Assert.Equal(programs[0].SeriesId, programs[1].SeriesId);
+    }
+
+    [Fact]
     public async Task GetProgramsAsync_Etag_SameContentIsStable()
     {
         var first = await GetSingleProgramAsync("Test Data/LiveTv/Listings/XmlTv/etag-base.xml");

@@ -1,0 +1,16 @@
+<tv date="20221104">
+  <programme channel="3297" start="20221104130000 +0000" stop="20221104140000 +0000">
+    <title lang="en">Bing</title>
+    <sub-title lang="en">Swing</sub-title>
+    <desc lang="en">Bing and his friends play on the swing.</desc>
+    <episode-num system="onscreen">S1E3</episode-num>
+    <category lang="en">children</category>
+  </programme>
+  <programme channel="3297" start="20221104140000 +0000" stop="20221104150000 +0000">
+    <title lang="en">Bing</title>
+    <sub-title lang="en">Dandelion</sub-title>
+    <desc lang="en">Bing blows a dandelion.</desc>
+    <episode-num system="onscreen">S1E4</episode-num>
+    <category lang="en">children</category>
+  </programme>
+</tv>

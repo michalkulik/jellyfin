@@ -260,6 +260,13 @@ namespace Jellyfin.LiveTv.Listings
             var rating = program.Ratings.FirstOrDefault()?.Value;
             var starRating = program.StarRatings?.FirstOrDefault()?.StarRating;
 
+            // Some XMLTV sources (e.g. epg.ovh) only provide episode numbers through
+            // <episode-num system="onscreen">S1E3</episode-num>, which the XMLTV reader ignores.
+            // For those, the presence of a <sub-title> (episode title) is the only reliable signal
+            // that a programme belongs to a series. Without treating it as a series Jellyfin can't
+            // group episodes or offer series recording at all.
+            var isSeries = program.Episode?.Episode is not null || !string.IsNullOrEmpty(episodeTitle);
+
             var programInfo = new ProgramInfo
             {
                 ChannelId = program.ChannelId,
@@ -272,7 +279,7 @@ namespace Jellyfin.LiveTv.Listings
                 Overview = program.Description,
                 ProductionYear = program.CopyrightDate?.Year,
                 SeasonNumber = program.Episode?.Series,
-                IsSeries = program.Episode?.Episode is not null,
+                IsSeries = isSeries,
                 IsRepeat = program.IsPreviouslyShown && !program.IsNew,
                 IsPremiere = program.Premiere is not null,
                 IsLive = program.IsLive,
@@ -286,7 +293,7 @@ namespace Jellyfin.LiveTv.Listings
                 ThumbImageUrl = string.IsNullOrEmpty(episodeImageUrl) ? null : episodeImageUrl,
                 OfficialRating = string.IsNullOrEmpty(rating) ? null : rating,
                 CommunityRating = starRating is null ? null : (float)starRating.Value,
-                SeriesId = program.Episode?.Episode is null ? null : program.Title?.GetMD5().ToString("N", CultureInfo.InvariantCulture)
+                SeriesId = isSeries ? program.Title?.GetMD5().ToString("N", CultureInfo.InvariantCulture) : null
             };
 
             if (string.IsNullOrWhiteSpace(program.ProgramId))
