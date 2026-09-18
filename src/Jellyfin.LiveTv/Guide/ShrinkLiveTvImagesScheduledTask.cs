@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.LiveTv.Configuration;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
@@ -23,7 +25,7 @@ public class ShrinkLiveTvImagesScheduledTask : IScheduledTask, IConfigurableSche
     private readonly ILiveTvManager _liveTvManager;
     private readonly ILibraryManager _libraryManager;
     private readonly IImageProcessor _imageProcessor;
-    private readonly IConfigurationManager _config;
+    private readonly IServerConfigurationManager _config;
     private readonly ILogger<ShrinkLiveTvImagesScheduledTask> _logger;
 
     /// <summary>
@@ -38,7 +40,7 @@ public class ShrinkLiveTvImagesScheduledTask : IScheduledTask, IConfigurableSche
         ILiveTvManager liveTvManager,
         ILibraryManager libraryManager,
         IImageProcessor imageProcessor,
-        IConfigurationManager config,
+        IServerConfigurationManager config,
         ILogger<ShrinkLiveTvImagesScheduledTask> logger)
     {
         _liveTvManager = liveTvManager;
@@ -114,8 +116,54 @@ public class ShrinkLiveTvImagesScheduledTask : IScheduledTask, IConfigurableSche
             progress.Report(numComplete / (double)items.Count);
         }
 
+        // Sweep the on-disk cache as well: it also holds images of programs that are no longer part
+        // of the library (for example listings that were removed before the refresh cleaned them).
+        numReduced += await SweepMetadataFolderAsync(cancellationToken).ConfigureAwait(false);
+
         progress.Report(100);
         _logger.LogInformation("Shrunk {Count} Live TV images", numReduced);
+    }
+
+    private async Task<int> SweepMetadataFolderAsync(CancellationToken cancellationToken)
+    {
+        var root = Path.Combine(_config.ApplicationPaths.InternalMetadataPath, "livetv");
+        if (!Directory.Exists(root))
+        {
+            return 0;
+        }
+
+        var numReduced = 0;
+        var probeItem = new LiveTvProgram();
+
+        foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length <= ImageSizeReducer.DefaultMaxSizeBytes)
+                {
+                    continue;
+                }
+
+                if (await ImageSizeReducer.ReduceAsync(
+                        _imageProcessor,
+                        probeItem,
+                        path,
+                        ImageSizeReducer.DefaultMaxSizeBytes,
+                        cancellationToken).ConfigureAwait(false))
+                {
+                    numReduced++;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Unable to shrink Live TV image {Path}", path);
+            }
+        }
+
+        return numReduced;
     }
 
     /// <inheritdoc />
