@@ -17,6 +17,16 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
 {
     private const int MaxConcurrentConversions = 2;
 
+    /// <summary>
+    /// How long ffmpeg is given to stop gracefully before it is killed.
+    /// </summary>
+    private const int GracefulStopTimeoutMs = 5000;
+
+    /// <summary>
+    /// How long the kill is given to take effect.
+    /// </summary>
+    private const int KillTimeoutMs = 5000;
+
     private static readonly TimeSpan _jobRetention = TimeSpan.FromHours(12);
     private static readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(30);
 
@@ -61,10 +71,10 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
     {
         var job = new DownloadJob(jobId, itemId, fileName, path)
         {
-            Status = DownloadJobStatus.Ready,
             IsOriginal = true,
             Size = GetFileLength(path)
         };
+        job.SetStatus(DownloadJobStatus.Ready);
 
         _jobs[jobId] = job;
 
@@ -104,24 +114,86 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
             return false;
         }
 
-        job.Status = DownloadJobStatus.Cancelled;
+        // Read the state before marking the job as cancelled: a finished conversion has a file that
+        // may still be downloading, so it must be kept.
+        var isReady = job.Status == DownloadJobStatus.Ready;
+
+        // Mark the job as cancelled first: the conversion task re-reads this flag after ffmpeg was
+        // started, which covers the race where the cancel arrives while the job is still queued.
+        job.MarkCancelled();
 
         try
         {
             job.CancellationTokenSource?.Cancel();
-            job.TranscodingJob?.Stop();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error while cancelling download job {JobId}", jobId);
+            _logger.LogWarning(ex, "Error while cancelling the token of download job {JobId}", jobId);
         }
 
-        if (!job.IsOriginal)
+        if (!job.IsOriginal && !isReady)
         {
+            // Make sure ffmpeg is really gone before deleting its output, otherwise it would simply
+            // keep writing to the (recreated) file and keep occupying a conversion slot.
+            StopProcess(job);
             TryDeleteFile(job.OutputPath);
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Stops the ffmpeg process of a job, falling back to killing it when it does not exit.
+    /// </summary>
+    /// <param name="job">The job to stop.</param>
+    private void StopProcess(DownloadJob job)
+    {
+        var transcodingJob = job.TranscodingJob;
+        if (transcodingJob is null)
+        {
+            return;
+        }
+
+        var process = transcodingJob.Process;
+
+        try
+        {
+            // Requests a graceful shutdown ("q" on stdin, then a kill after a timeout).
+            transcodingJob.Stop();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error while stopping ffmpeg for download job {JobId}", job.Id);
+        }
+
+        if (process is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!process.HasExited && !process.WaitForExit(GracefulStopTimeoutMs))
+            {
+                _logger.LogWarning("FFmpeg did not stop, killing it for download job {JobId}", job.Id);
+                process.Kill(true);
+            }
+
+            if (!process.HasExited)
+            {
+                process.WaitForExit(KillTimeoutMs);
+            }
+
+            if (!process.HasExited)
+            {
+                _logger.LogError("Unable to stop ffmpeg for download job {JobId}", job.Id);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            // The process object can be disposed or inaccessible once it exited.
+            _logger.LogDebug(ex, "Unable to inspect ffmpeg for download job {JobId}", job.Id);
+        }
     }
 
     private async Task RunJobAsync(DownloadJob job, StreamState state, string commandLine, Guid userId)
@@ -132,18 +204,18 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
 
         try
         {
-            job.Status = DownloadJobStatus.Queued;
+            job.SetStatus(DownloadJobStatus.Queued);
             await _concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            job.Status = DownloadJobStatus.Cancelled;
+            job.SetStatus(DownloadJobStatus.Cancelled);
             return;
         }
 
         try
         {
-            job.Status = DownloadJobStatus.Converting;
+            job.SetStatus(DownloadJobStatus.Converting);
 
             var transcodingJob = await _transcodeManager.StartFfMpeg(
                 state,
@@ -154,6 +226,15 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
                 cancellationTokenSource).ConfigureAwait(false);
 
             job.TranscodingJob = transcodingJob;
+
+            // The cancel may have arrived while the process was starting, in which case it could not
+            // stop anything yet, so stop the freshly started process here.
+            if (job.IsCancelled)
+            {
+                StopProcess(job);
+                TryDeleteFile(job.OutputPath);
+                return;
+            }
 
             while (!transcodingJob.HasExited)
             {
@@ -169,9 +250,9 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
                 }
             }
 
-            if (cancellationToken.IsCancellationRequested)
+            if (job.IsCancelled || cancellationToken.IsCancellationRequested)
             {
-                job.Status = DownloadJobStatus.Cancelled;
+                StopProcess(job);
                 TryDeleteFile(job.OutputPath);
                 return;
             }
@@ -181,11 +262,11 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
             {
                 job.Progress = 100;
                 job.Size = length;
-                job.Status = DownloadJobStatus.Ready;
+                job.SetStatus(DownloadJobStatus.Ready);
             }
             else
             {
-                job.Status = DownloadJobStatus.Failed;
+                job.SetStatus(DownloadJobStatus.Failed);
                 job.Error = string.Format(CultureInfo.InvariantCulture, "FFmpeg exited with code {0}", transcodingJob.ExitCode);
                 TryDeleteFile(job.OutputPath);
             }
@@ -194,7 +275,7 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
         {
             _logger.LogError(ex, "Download conversion job {JobId} failed", job.Id);
 
-            job.Status = DownloadJobStatus.Failed;
+            job.SetStatus(DownloadJobStatus.Failed);
             job.Error = ex.Message;
             TryDeleteFile(job.OutputPath);
         }
@@ -270,6 +351,8 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
 
     private sealed class DownloadJob
     {
+        private readonly Lock _lock = new();
+
         public DownloadJob(string id, Guid itemId, string fileName, string outputPath)
         {
             Id = id;
@@ -286,7 +369,7 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
 
         public string OutputPath { get; }
 
-        public DownloadJobStatus Status { get; set; } = DownloadJobStatus.Queued;
+        public DownloadJobStatus Status { get; private set; } = DownloadJobStatus.Queued;
 
         public double? Progress { get; set; }
 
@@ -302,15 +385,59 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
 
         public CancellationTokenSource? CancellationTokenSource { get; set; }
 
-        public DownloadJobInfo ToInfo() => new()
+        /// <summary>
+        /// Gets a value indicating whether the user cancelled this job.
+        /// </summary>
+        public bool IsCancelled
         {
-            Id = Id,
-            ItemId = ItemId,
-            Status = Status,
-            Progress = Progress,
-            FileName = FileName,
-            Size = Size,
-            Error = Error
-        };
+            get
+            {
+                lock (_lock)
+                {
+                    return Status == DownloadJobStatus.Cancelled;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Marks the job as cancelled.
+        /// </summary>
+        public void MarkCancelled() => SetStatus(DownloadJobStatus.Cancelled);
+
+        /// <summary>
+        /// Updates the status without ever clearing a cancellation.
+        /// </summary>
+        /// <param name="status">The new status.</param>
+        public void SetStatus(DownloadJobStatus status)
+        {
+            lock (_lock)
+            {
+                // A cancelled job must stay cancelled: completion of the process it raced with must
+                // not turn it back into a ready or failed job.
+                if (Status == DownloadJobStatus.Cancelled && status != DownloadJobStatus.Cancelled)
+                {
+                    return;
+                }
+
+                Status = status;
+            }
+        }
+
+        public DownloadJobInfo ToInfo()
+        {
+            lock (_lock)
+            {
+                return new DownloadJobInfo
+                {
+                    Id = Id,
+                    ItemId = ItemId,
+                    Status = Status,
+                    Progress = Progress,
+                    FileName = FileName,
+                    Size = Size,
+                    Error = Error
+                };
+            }
+        }
     }
 }
