@@ -97,9 +97,9 @@ public class ItemRefreshController : BaseJellyfinApiController
     /// Scans the folders of an item for new and removed files.
     /// </summary>
     /// <remarks>
-    /// Only libraries (collection folders) and series are supported. A library is scanned through
-    /// its physical folders, a series is scanned through its own folder, so the rest of the media
-    /// library is left untouched.
+    /// Only libraries (collection folders), series and seasons are supported. A library is scanned
+    /// through its physical folders, a series or season through its own folder, so the rest of the
+    /// media library is left untouched.
     /// </remarks>
     /// <param name="itemId">Item id.</param>
     /// <response code="204">Scan queued.</response>
@@ -119,7 +119,7 @@ public class ItemRefreshController : BaseJellyfinApiController
             return NotFound();
         }
 
-        if (item is not CollectionFolder && item is not Series)
+        if (item is not CollectionFolder && item is not Series && item is not Season)
         {
             return BadRequest();
         }
