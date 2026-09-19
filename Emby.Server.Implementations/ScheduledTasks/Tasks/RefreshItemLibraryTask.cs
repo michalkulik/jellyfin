@@ -13,7 +13,12 @@ namespace Emby.Server.Implementations.ScheduledTasks.Tasks;
 /// <summary>
 /// Scans the folders of a single library or series for new and removed files.
 /// </summary>
-public class RefreshItemLibraryTask : IScheduledTask
+/// <remarks>
+/// This task is intentionally internal: it needs the item to scan, so it cannot be created by
+/// the dependency injection container like the other scheduled tasks. It is queued directly by
+/// the library manager instead.
+/// </remarks>
+internal sealed class RefreshItemLibraryTask : IScheduledTask
 {
     private readonly ILibraryManager _libraryManager;
     private readonly ILocalizationManager _localization;
