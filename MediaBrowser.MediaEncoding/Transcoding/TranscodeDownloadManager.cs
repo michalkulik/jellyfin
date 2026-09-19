@@ -142,6 +142,34 @@ public sealed class TranscodeDownloadManager : ITranscodeDownloadManager, IDispo
         return true;
     }
 
+    /// <inheritdoc />
+    public bool Complete(string jobId)
+    {
+        if (!_jobs.TryRemove(jobId, out var job))
+        {
+            // Already completed or expired, which is fine for an idempotent call.
+            return false;
+        }
+
+        if (job.IsOriginal)
+        {
+            // The original job points at the media file, which must never be deleted.
+            return true;
+        }
+
+        if (job.TranscodingJob is not null && !job.TranscodingJob.HasExited)
+        {
+            // The file is still being written, so it cannot be removed yet. Keep the job registered
+            // and let the regular cleanup pick it up.
+            _jobs.TryAdd(jobId, job);
+            return false;
+        }
+
+        TryDeleteFile(job.OutputPath);
+        _logger.LogDebug("Removed the converted file of download job {JobId}", jobId);
+        return true;
+    }
+
     /// <summary>
     /// Stops the ffmpeg process of a job, falling back to killing it when it does not exit.
     /// </summary>

@@ -137,14 +137,89 @@ namespace Jellyfin.MediaEncoding.Tests.Transcoding
                     It.IsAny<string?>()))
                 .ReturnsAsync(transcodingJob);
 
-            var jobId = StartJob(output);
+            // Write the output before enqueueing so the job cannot observe an empty file and fail.
             await File.WriteAllBytesAsync(output, new byte[256], TestContext.Current.CancellationToken);
+
+            var jobId = StartJob(output);
             await WaitForStatusAsync(jobId, DownloadJobStatus.Ready);
 
             // Cancelling a job whose conversion already finished must not delete the converted file:
             // the client may be downloading it right now, and re-converting is expensive.
             Assert.True(_manager.Cancel(jobId));
             Assert.Equal(DownloadJobStatus.Cancelled, _manager.GetJob(jobId)!.Status);
+            Assert.True(File.Exists(output));
+        }
+
+        [Fact]
+        public void Complete_UnknownJob_ReturnsFalse()
+        {
+            Assert.False(_manager.Complete("does-not-exist"));
+        }
+
+        [Fact]
+        public void Complete_OriginalJob_KeepsTheSourceFile()
+        {
+            var source = CreateFile("source-complete.mkv", 128);
+            var info = _manager.EnqueueOriginal("original-complete", Guid.NewGuid(), source, "source-complete.mkv");
+            Assert.Equal(DownloadJobStatus.Ready, info.Status);
+
+            Assert.True(_manager.Complete("original-complete"));
+
+            // The original download points at the media file and must never be deleted.
+            Assert.True(File.Exists(source));
+            Assert.Null(_manager.GetJob("original-complete"));
+        }
+
+        [Fact]
+        public async Task Complete_FinishedConversion_DeletesTheConvertedFile()
+        {
+            var output = Path.Combine(_tempDirectory, "release-finished.mp4");
+
+            var transcodingJob = new TranscodingJob(Mock.Of<ILogger<TranscodingJob>>())
+            {
+                HasExited = true,
+                ExitCode = 0
+            };
+            _transcodeManager
+                .Setup(i => i.StartFfMpeg(
+                    It.IsAny<StreamState>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<Guid>(),
+                    It.IsAny<TranscodingJobType>(),
+                    It.IsAny<CancellationTokenSource>(),
+                    It.IsAny<string?>()))
+                .ReturnsAsync(transcodingJob);
+
+            // Write the output before enqueueing so the job cannot observe an empty file and fail.
+            await File.WriteAllBytesAsync(output, new byte[256], TestContext.Current.CancellationToken);
+
+            var jobId = StartJob(output);
+            await WaitForStatusAsync(jobId, DownloadJobStatus.Ready);
+
+            // The client downloaded the converted file; the server must stop keeping it around.
+            Assert.True(_manager.Complete(jobId));
+
+            Assert.False(File.Exists(output));
+            Assert.Null(_manager.GetJob(jobId));
+        }
+
+        [Fact]
+        public async Task Complete_RunningConversion_IsRefusedAndKeepsTheOutput()
+        {
+            var output = Path.Combine(_tempDirectory, "release-running.mp4");
+
+            StartConversion(output);
+
+            var jobId = StartJob(output);
+            await WaitForStatusAsync(jobId, DownloadJobStatus.Converting);
+
+            await File.WriteAllBytesAsync(output, new byte[256], TestContext.Current.CancellationToken);
+
+            // ffmpeg is still writing the file, so it cannot be released yet.
+            Assert.False(_manager.Complete(jobId));
+
+            Assert.NotNull(_manager.GetJob(jobId));
             Assert.True(File.Exists(output));
         }
 

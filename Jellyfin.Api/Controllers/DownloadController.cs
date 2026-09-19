@@ -219,7 +219,48 @@ public class DownloadController : BaseJellyfinApiController
             return NotFound();
         }
 
+        // Clean the server up once the client received the whole file. Range requests are used to
+        // resume an interrupted download and must not trigger the cleanup.
+        var range = Request.GetTypedHeaders().Range;
+        if (range is null || range.Ranges.Count == 0)
+        {
+            var length = new FileInfo(path).Length;
+            var context = HttpContext;
+            context.Response.OnCompleted(() =>
+            {
+                if (context.Response.StatusCode == StatusCodes.Status200OK
+                    && context.Response.ContentLength == length)
+                {
+                    _downloadManager.Complete(jobId);
+                }
+
+                return Task.CompletedTask;
+            });
+        }
+
         return PhysicalFile(path, MimeTypes.GetMimeType(path), fileName ?? Path.GetFileName(path), enableRangeProcessing: true);
+    }
+
+    /// <summary>
+    /// Reports that a finished job was downloaded, so the server can remove the converted file.
+    /// </summary>
+    /// <param name="itemId">The item id.</param>
+    /// <param name="jobId">The job id.</param>
+    /// <response code="204">The job was completed.</response>
+    /// <returns>A task representing the completion.</returns>
+    [HttpPost("Items/{itemId}/Download/{jobId}/Complete")]
+    [Authorize(Policy = Policies.Download)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public ActionResult CompleteDownload([FromRoute] Guid itemId, [FromRoute] string jobId)
+    {
+        var job = _downloadManager.GetJob(jobId);
+        if (job is null || !job.ItemId.Equals(itemId))
+        {
+            return NotFound();
+        }
+
+        _downloadManager.Complete(jobId);
+        return NoContent();
     }
 
     /// <summary>

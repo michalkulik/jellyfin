@@ -59,5 +59,12 @@ namespace MediaBrowser.Controller.Downloads
         /// <param name="jobId">The job id.</param>
         /// <returns><c>true</c> when the job existed.</returns>
         bool Cancel(string jobId);
+
+        /// <summary>
+        /// Marks a job as downloaded and removes the server side resources it holds.
+        /// </summary>
+        /// <param name="jobId">The job id.</param>
+        /// <returns><c>true</c> when the job existed.</returns>
+        bool Complete(string jobId);
     }
 }
