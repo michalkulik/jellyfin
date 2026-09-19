@@ -3281,6 +3281,82 @@ namespace Emby.Server.Implementations.Library
         }
 
         /// <inheritdoc />
+        public void QueueItemLibraryScan(Guid itemId)
+        {
+            var item = GetItemById(itemId);
+            if (item is null)
+            {
+                return;
+            }
+
+            _taskManager.QueueScheduledTask(new RefreshItemLibraryTask(this, _localization, item), new TaskOptions());
+        }
+
+        /// <inheritdoc />
+        public async Task ValidateItemLibrary(BaseItem item, IProgress<double> progress, CancellationToken cancellationToken)
+        {
+            IsScanRunning = true;
+            ClearIgnoreRuleCache();
+            LibraryMonitor.Stop();
+
+            try
+            {
+                await PerformItemLibraryValidation(item, progress, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                ClearIgnoreRuleCache();
+                LibraryMonitor.Start();
+                IsScanRunning = false;
+            }
+        }
+
+        /// <summary>
+        /// Validates the folders of a single item.
+        /// </summary>
+        /// <param name="item">The item to validate.</param>
+        /// <param name="progress">The progress.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>Task.</returns>
+        private async Task PerformItemLibraryValidation(BaseItem item, IProgress<double> progress, CancellationToken cancellationToken)
+        {
+            _logger.LogInformation("Validating media library of {Item}", item.Name ?? item.Path);
+
+            var refreshOptions = new MetadataRefreshOptions(new DirectoryService(_fileSystem));
+
+            // A collection folder is a virtual container, so its physical folders are scanned
+            // instead. Any other folder (for example a series) is scanned directly.
+            var folders = item switch
+            {
+                CollectionFolder collectionFolder => collectionFolder.GetPhysicalFolders().ToList(),
+                Folder folder => [folder],
+                _ => new List<Folder>()
+            };
+
+            if (folders.Count == 0)
+            {
+                progress.Report(100);
+                return;
+            }
+
+            for (var i = 0; i < folders.Count; i++)
+            {
+                var index = i;
+                var innerProgress = new Progress<double>(pct => progress.Report(((index + (pct / 100)) / folders.Count) * 96));
+
+                await folders[index].ValidateChildren(innerProgress, refreshOptions, recursive: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
+            progress.Report(96);
+
+            var postScanProgress = new Progress<double>(pct => progress.Report(96 + (pct * 0.04)));
+
+            await RunPostScanTasks(postScanProgress, cancellationToken).ConfigureAwait(false);
+
+            progress.Report(100);
+        }
+
+        /// <inheritdoc />
         public int? GetSeasonNumberFromPath(string path, Guid? parentId)
         {
             var parentPath = parentId.HasValue ? GetItemById(parentId.Value)?.ContainingFolderPath : null;

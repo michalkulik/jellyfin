@@ -6,6 +6,8 @@ using AutoFixture.AutoMoq;
 using Emby.Naming.Common;
 using Emby.Server.Implementations.ScheduledTasks.Tasks;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Tasks;
 using Moq;
@@ -51,5 +53,44 @@ public class LibraryManagerScanTests
 
         tasks.Verify(t => t.CancelIfRunningAndQueue<RefreshMediaLibraryTask>(), Times.Once());
         tasks.Verify(t => t.QueueScheduledTask<RefreshMediaLibraryTask>(), Times.Never());
+    }
+
+    [Fact]
+    public void QueueItemLibraryScan_UnknownItem_DoesNotQueueAnything()
+    {
+        var fixture = new Fixture().Customize(new AutoMoqCustomization());
+        fixture.Register(() => new NamingOptions());
+        var configuration = fixture.Freeze<Mock<IServerConfigurationManager>>();
+        configuration.Setup(c => c.Configuration).Returns(new ServerConfiguration());
+        configuration.Setup(c => c.ApplicationPaths.ProgramDataPath).Returns("/data");
+        var repository = fixture.Freeze<Mock<IItemRepository>>();
+        repository.Setup(r => r.RetrieveItem(It.IsAny<Guid>())).Returns((BaseItem)null!);
+        var tasks = fixture.Freeze<Mock<ITaskManager>>();
+        var manager = fixture.Create<ServerLibraryManager>();
+
+        manager.QueueItemLibraryScan(Guid.NewGuid());
+
+        tasks.Verify(t => t.QueueScheduledTask(It.IsAny<IScheduledTask>(), It.IsAny<TaskOptions>()), Times.Never());
+    }
+
+    [Fact]
+    public void QueueItemLibraryScan_KnownItem_QueuesScopedScan()
+    {
+        var fixture = new Fixture().Customize(new AutoMoqCustomization());
+        fixture.Register(() => new NamingOptions());
+        var configuration = fixture.Freeze<Mock<IServerConfigurationManager>>();
+        configuration.Setup(c => c.Configuration).Returns(new ServerConfiguration());
+        configuration.Setup(c => c.ApplicationPaths.ProgramDataPath).Returns("/data");
+        var tasks = fixture.Freeze<Mock<ITaskManager>>();
+        var manager = fixture.Create<ServerLibraryManager>();
+
+        var item = new CollectionFolder { Id = Guid.NewGuid(), Name = "Movies" };
+        manager.RegisterItem(item);
+
+        manager.QueueItemLibraryScan(item.Id);
+
+        tasks.Verify(
+            t => t.QueueScheduledTask(It.Is<IScheduledTask>(task => task is RefreshItemLibraryTask), It.IsAny<TaskOptions>()),
+            Times.Once());
     }
 }

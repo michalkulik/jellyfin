@@ -76,6 +76,8 @@
     "TaskCleanLogs": "Wyczyść folder logów",
     "TaskRefreshLibraryDescription": "Skanuje Twoją bibliotekę mediów dla nowych plików i odświeżenia metadanych.",
     "TaskRefreshLibrary": "Skanuj bibliotekę mediów",
+    "TaskRefreshItemLibrary": "Skanuj {0}",
+    "TaskRefreshItemLibraryDescription": "Skanuje foldery tego elementu w poszukiwaniu nowych i usuniętych plików.",
     "TaskRefreshChapterImagesDescription": "Tworzy miniatury dla filmów posiadających rozdziały.",
     "TaskRefreshChapterImages": "Wydobądź grafiki rozdziałów",
     "TaskCleanCacheDescription": "Usuwa niepotrzebne i przestarzałe pliki cache.",

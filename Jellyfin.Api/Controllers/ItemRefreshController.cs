@@ -6,6 +6,7 @@ using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.IO;
@@ -89,6 +90,41 @@ public class ItemRefreshController : BaseJellyfinApiController
         };
 
         _providerManager.QueueRefresh(item.Id, refreshOptions, RefreshPriority.High);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Scans the folders of an item for new and removed files.
+    /// </summary>
+    /// <remarks>
+    /// Only libraries (collection folders) and series are supported. A library is scanned through
+    /// its physical folders, a series is scanned through its own folder, so the rest of the media
+    /// library is left untouched.
+    /// </remarks>
+    /// <param name="itemId">Item id.</param>
+    /// <response code="204">Scan queued.</response>
+    /// <response code="400">The item type does not support scanning.</response>
+    /// <response code="404">Item to scan not found.</response>
+    /// <returns>An <see cref="NoContentResult"/> on success.</returns>
+    [HttpPost("{itemId}/Scan")]
+    [Description("Scans the folders of an item for new and removed files.")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult ScanItem([FromRoute, Required] Guid itemId)
+    {
+        var item = _libraryManager.GetItemById<BaseItem>(itemId, User.GetUserId());
+        if (item is null)
+        {
+            return NotFound();
+        }
+
+        if (item is not CollectionFolder && item is not Series)
+        {
+            return BadRequest();
+        }
+
+        _libraryManager.QueueItemLibraryScan(itemId);
         return NoContent();
     }
 }

@@ -810,6 +810,26 @@ namespace MediaBrowser.Controller.Library
         void QueueLibraryScan();
 
         /// <summary>
+        /// Queue a library scan limited to the folders of the supplied item.
+        /// </summary>
+        /// <remarks>
+        /// A collection folder is scanned through its physical folders, any other folder (for
+        /// example a series) is scanned directly. This allows scanning a single library or a
+        /// single series without walking the whole media library.
+        /// </remarks>
+        /// <param name="itemId">The id of the item to scan.</param>
+        void QueueItemLibraryScan(Guid itemId);
+
+        /// <summary>
+        /// Validates the folders of the supplied item, scanning for new and removed files.
+        /// </summary>
+        /// <param name="item">The item whose folders should be scanned.</param>
+        /// <param name="progress">The progress.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>Task.</returns>
+        Task ValidateItemLibrary(BaseItem item, IProgress<double> progress, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Add mblink file for a media path.
         /// </summary>
         /// <param name="virtualFolderPath">The path to the virtualfolder.</param>

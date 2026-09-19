@@ -96,6 +96,8 @@
     "TaskAudioNormalizationDescription": "Scans files for audio normalization data.",
     "TaskRefreshLibrary": "Scan Media Library",
     "TaskRefreshLibraryDescription": "Scans your media library for new files and refreshes metadata.",
+    "TaskRefreshItemLibrary": "Scan {0}",
+    "TaskRefreshItemLibraryDescription": "Scans the folders of this item for new and removed files.",
     "TaskCleanLogs": "Clean Log Directory",
     "TaskCleanLogsDescription": "Deletes log files that are more than {0} days old.",
     "TaskRefreshPeople": "Refresh People",
