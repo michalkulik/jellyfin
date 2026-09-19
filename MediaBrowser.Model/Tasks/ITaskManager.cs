@@ -78,6 +78,17 @@ namespace MediaBrowser.Model.Tasks
         void QueueScheduledTask(IScheduledTask task, TaskOptions options);
 
         /// <summary>
+        /// Executes a scheduled task that is not registered with the task manager.
+        /// </summary>
+        /// <remarks>
+        /// Used for tasks that need runtime state, so they cannot be created by the dependency
+        /// injection container and therefore never appear in <see cref="ScheduledTasks"/>.
+        /// </remarks>
+        /// <param name="task">The <see cref="IScheduledTask" /> to execute.</param>
+        /// <param name="options">The <see cref="TaskOptions" /> to use.</param>
+        void Execute(IScheduledTask task, TaskOptions options);
+
+        /// <summary>
         /// Adds the tasks.
         /// </summary>
         /// <param name="tasks">The tasks.</param>

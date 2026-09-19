@@ -211,6 +211,13 @@ public class TaskManager : ITaskManager
         return ((ScheduledTaskWorker)task).Execute(options);
     }
 
+    /// <inheritdoc />
+    public void Execute(IScheduledTask task, TaskOptions options)
+    {
+        var worker = new ScheduledTaskWorker(task, _applicationPaths, this, _logger);
+        Execute(worker, options);
+    }
+
     /// <summary>
     /// Called when [task executing].
     /// </summary>

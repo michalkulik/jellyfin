@@ -3289,7 +3289,7 @@ namespace Emby.Server.Implementations.Library
                 return;
             }
 
-            _taskManager.QueueScheduledTask(new RefreshItemLibraryTask(this, _localization, item), new TaskOptions());
+            _taskManager.Execute(new RefreshItemLibraryTask(this, _localization, item), new TaskOptions());
         }
 
         /// <inheritdoc />

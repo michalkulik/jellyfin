@@ -70,7 +70,7 @@ public class LibraryManagerScanTests
 
         manager.QueueItemLibraryScan(Guid.NewGuid());
 
-        tasks.Verify(t => t.QueueScheduledTask(It.IsAny<IScheduledTask>(), It.IsAny<TaskOptions>()), Times.Never());
+        tasks.Verify(t => t.Execute(It.IsAny<IScheduledTask>(), It.IsAny<TaskOptions>()), Times.Never());
     }
 
     [Fact]
@@ -90,7 +90,7 @@ public class LibraryManagerScanTests
         manager.QueueItemLibraryScan(item.Id);
 
         tasks.Verify(
-            t => t.QueueScheduledTask(It.Is<IScheduledTask>(task => task is RefreshItemLibraryTask), It.IsAny<TaskOptions>()),
+            t => t.Execute(It.Is<IScheduledTask>(task => task is RefreshItemLibraryTask), It.IsAny<TaskOptions>()),
             Times.Once());
     }
 }
