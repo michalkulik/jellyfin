@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
@@ -33,6 +35,7 @@ public sealed class HardwareAccelerationDetector : IHardwareAccelerationDetector
     private const string DriDirectory = "/dev/dri";
 
     private readonly IMediaEncoder _mediaEncoder;
+    private readonly IServerConfigurationManager _configurationManager;
     private readonly ILogger<HardwareAccelerationDetector> _logger;
     private readonly object _lock = new();
 
@@ -42,12 +45,15 @@ public sealed class HardwareAccelerationDetector : IHardwareAccelerationDetector
     /// Initializes a new instance of the <see cref="HardwareAccelerationDetector"/> class.
     /// </summary>
     /// <param name="mediaEncoder">Instance of the <see cref="IMediaEncoder"/> interface.</param>
+    /// <param name="configurationManager">Instance of the <see cref="IServerConfigurationManager"/> interface.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{HardwareAccelerationDetector}"/> interface.</param>
     public HardwareAccelerationDetector(
         IMediaEncoder mediaEncoder,
+        IServerConfigurationManager configurationManager,
         ILogger<HardwareAccelerationDetector> logger)
     {
         _mediaEncoder = mediaEncoder;
+        _configurationManager = configurationManager;
         _logger = logger;
     }
 
@@ -190,6 +196,7 @@ public sealed class HardwareAccelerationDetector : IHardwareAccelerationDetector
 
     private IReadOnlyList<HardwareAccelerationOption> Detect()
     {
+        var options = _configurationManager.GetEncodingOptions();
         var candidates = new List<(HardwareAccelerationType Type, string? Device)>();
         var deviceDescriptions = new Dictionary<HardwareAccelerationType, string?>();
 
@@ -252,13 +259,27 @@ public sealed class HardwareAccelerationDetector : IHardwareAccelerationDetector
         var result = new List<HardwareAccelerationOption>();
         foreach (var (type, device) in candidates)
         {
-            if (Validate(type, device, out var driverName, out var effectiveDevice))
+            // Prefer the device from the configuration when it is valid, so the reported device is
+            // the one that would actually be used by the transcoder.
+            var configuredDevice = type switch
+            {
+                HardwareAccelerationType.vaapi => options?.VaapiDevice,
+                HardwareAccelerationType.qsv => options?.QsvDevice,
+                _ => null
+            };
+
+            var preferredDevice = !string.IsNullOrEmpty(configuredDevice)
+                && Validate(type, configuredDevice, out _, out _)
+                ? configuredDevice
+                : device;
+
+            if (Validate(type, preferredDevice, out var driverName, out var effectiveDevice))
             {
                 result.Add(new HardwareAccelerationOption
                 {
                     Type = type,
                     Device = effectiveDevice,
-                    DeviceName = BuildDeviceName(driverName, deviceDescriptions.GetValueOrDefault(type), device)
+                    DeviceName = BuildDeviceName(driverName, deviceDescriptions.GetValueOrDefault(type), preferredDevice)
                 });
             }
         }
