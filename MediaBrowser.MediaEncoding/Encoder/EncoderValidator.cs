@@ -422,6 +422,35 @@ namespace MediaBrowser.MediaEncoding.Encoder
             }
         }
 
+        /// <summary>
+        /// Checks whether FFmpeg can initialize the given hardware device. This is a real
+        /// initialization, so it also fails for device nodes that exist but cannot be opened.
+        /// </summary>
+        /// <param name="initArguments">The arguments passed to <c>-init_hw_device</c>.</param>
+        /// <param name="output">The output of FFmpeg, used to identify the driver.</param>
+        /// <returns><c>true</c> when the device could be initialized.</returns>
+        public bool CheckHwDeviceInitialization(string initArguments, out string output)
+        {
+            output = string.Empty;
+
+            if (string.IsNullOrWhiteSpace(initArguments))
+            {
+                return false;
+            }
+
+            try
+            {
+                var command = "-v verbose -hide_banner -init_hw_device " + initArguments
+                    + " -f lavfi -i nullsrc -frames:v 1 -f null -";
+                return GetProcessOutputAndExitCode(_encoderPath, command, out output);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error detecting the given hardware device");
+                return false;
+            }
+        }
+
         public bool CheckVulkanDrmDeviceByExtensionName(string renderNodePath, string[] vulkanExtensions)
         {
             if (!OperatingSystem.IsLinux())
@@ -696,6 +725,49 @@ namespace MediaBrowser.MediaEncoding.Encoder
                 _logger.LogError("Running {Path} {Arguments} failed with exception {Exception}", path, arguments, ex.Message);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Runs FFmpeg once and returns both the standard error output and whether it succeeded.
+        /// </summary>
+        /// <param name="path">The FFmpeg path.</param>
+        /// <param name="arguments">The arguments to pass.</param>
+        /// <param name="standardError">The standard error output.</param>
+        /// <returns><c>true</c> when FFmpeg exited with code 0.</returns>
+        private bool GetProcessOutputAndExitCode(string path, string arguments, out string standardError)
+        {
+            standardError = string.Empty;
+
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(path, arguments)
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    ErrorDialog = false,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    RedirectStandardOutput = true,
+                    StandardErrorEncoding = Encoding.UTF8,
+                    RedirectStandardError = true
+                }
+            };
+
+            _logger.LogDebug("Running {Path} {Arguments}", path, arguments);
+
+            process.Start();
+
+            using var standardOutput = process.StandardOutput;
+            using var standardErrorReader = process.StandardError;
+
+            // Drain both streams concurrently to prevent pipe hanging, see #17429
+            var standardOutputTask = standardOutput.ReadToEndAsync();
+            var standardErrorTask = standardErrorReader.ReadToEndAsync();
+            process.WaitForExit();
+            Task.WaitAll(standardOutputTask, standardErrorTask);
+
+            standardError = standardErrorTask.GetAwaiter().GetResult();
+            return process.ExitCode == 0;
         }
 
         [GeneratedRegex("^\\s\\S{6}\\s(?<codec>[\\w|-]+)\\s+.+$", RegexOptions.Multiline)]

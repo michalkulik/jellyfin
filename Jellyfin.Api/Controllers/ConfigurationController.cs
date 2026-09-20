@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Net.Mime;
 using System.Text.Json;
@@ -25,6 +26,7 @@ public class ConfigurationController : BaseJellyfinApiController
 {
     private readonly IServerConfigurationManager _configurationManager;
     private readonly IMediaEncoder _mediaEncoder;
+    private readonly IHardwareAccelerationDetector _hardwareAccelerationDetector;
 
     private readonly JsonSerializerOptions _serializerOptions = JsonDefaults.Options;
 
@@ -33,12 +35,33 @@ public class ConfigurationController : BaseJellyfinApiController
     /// </summary>
     /// <param name="configurationManager">Instance of the <see cref="IServerConfigurationManager"/> interface.</param>
     /// <param name="mediaEncoder">Instance of the <see cref="IMediaEncoder"/> interface.</param>
+    /// <param name="hardwareAccelerationDetector">Instance of the <see cref="IHardwareAccelerationDetector"/> interface.</param>
     public ConfigurationController(
         IServerConfigurationManager configurationManager,
-        IMediaEncoder mediaEncoder)
+        IMediaEncoder mediaEncoder,
+        IHardwareAccelerationDetector hardwareAccelerationDetector)
     {
         _configurationManager = configurationManager;
         _mediaEncoder = mediaEncoder;
+        _hardwareAccelerationDetector = hardwareAccelerationDetector;
+    }
+
+    /// <summary>
+    /// Gets the hardware acceleration methods that can be used on this server.
+    /// </summary>
+    /// <remarks>
+    /// The result only contains the methods that were detected to work on this machine, together
+    /// with the device that will be used for each of them. Software encoding is always possible and
+    /// is therefore not included.
+    /// </remarks>
+    /// <response code="200">Available hardware acceleration methods returned.</response>
+    /// <returns>The available hardware acceleration methods.</returns>
+    [HttpGet("Configuration/HardwareAcceleration")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<IReadOnlyList<HardwareAccelerationOption>> GetHardwareAccelerationOptions()
+    {
+        return Ok(_hardwareAccelerationDetector.GetAvailableOptions());
     }
 
     /// <summary>
