@@ -84,16 +84,33 @@ Then open <http://localhost:8096>.
 
 ## Ship to the Ubuntu server
 
-```powershell
-# Export on Windows
-docker save -o jellyfin-local-12z.tar jellyfin-local:12z
-scp .\jellyfin-local-12z.tar user@server:/tmp/
+**Any web or server change is shipped as a new image.** Never patch a running
+container by copying files into it: the image is the single source of truth, so a
+change exists on the server only after it was built, pushed and pulled. The whole
+flow is scripted:
 
-# On the server
-docker load -i /tmp/jellyfin-local-12z.tar
-docker run -d --name jellyfin -p 8096:8096 `
-  -v /srv/jellyfin/config:/config -v /srv/jellyfin/cache:/cache `
-  jellyfin-local:12z
+```powershell
+# build + push to Docker Hub + pull on the server + redeploy + verify
+.\deployment\local-docker\deploy.ps1 -SkipServerPublish
+```
+
+It runs `build.ps1`, pushes `mkulik91/jellyfin-but-better:latest`, prints the
+published digest, pulls it on `root@ubuntu`, recreates the `jellyfin` compose
+stack and finally checks the container health, the startup log and the web bundle.
+Add `-SkipBuild` to retry the push/deploy of an already built image.
+
+The equivalent manual steps, if the script cannot be used:
+
+```powershell
+docker push mkulik91/jellyfin-but-better:latest
+docker buildx imagetools inspect mkulik91/jellyfin-but-better:latest   # verify the digest
+```
+
+```bash
+# on the Docker host
+docker pull mkulik91/jellyfin-but-better:latest
+cd /srv/share/docker/portainer/compose/58
+docker compose -p jellyfin up -d
 ```
 
 ## How it works

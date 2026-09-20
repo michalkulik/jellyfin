@@ -77,21 +77,32 @@ function Quote-Arg([string]$Value) {
 }
 
 function Invoke-Docker([string[]]$DockerArgs) {
-    $docker = Get-Command docker -ErrorAction SilentlyContinue
-    if ($docker) {
-        Write-Host "Running: docker $($DockerArgs -join ' ')`n"
-        & docker @DockerArgs
+    # docker and wsl.exe write their progress to stderr. With $ErrorActionPreference = 'Stop' that
+    # would surface as a terminating NativeCommandError even for a successful build, so the native
+    # calls run with 'Continue' and the exit code is checked instead.
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+
+    try {
+        $docker = Get-Command docker -ErrorAction SilentlyContinue
+        if ($docker) {
+            Write-Host "Running: docker $($DockerArgs -join ' ')`n"
+            & docker @DockerArgs
+            return $LASTEXITCODE
+        }
+
+        if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
+            throw "Neither 'docker' (Windows) nor 'wsl' is available. Install Docker Desktop or Docker inside WSL2."
+        }
+
+        $joined = ($DockerArgs | ForEach-Object { Quote-Arg $_ }) -join ' '
+        Write-Host "Running in WSL: docker $joined`n"
+        & wsl -e bash -lc "docker $joined"
         return $LASTEXITCODE
     }
-
-    if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
-        throw "Neither 'docker' (Windows) nor 'wsl' is available. Install Docker Desktop or Docker inside WSL2."
+    finally {
+        $ErrorActionPreference = $previousErrorAction
     }
-
-    $joined = ($DockerArgs | ForEach-Object { Quote-Arg $_ }) -join ' '
-    Write-Host "Running in WSL: docker $joined`n"
-    & wsl -e bash -lc "docker $joined"
-    return $LASTEXITCODE
 }
 
 # --- Resolve locations -------------------------------------------------------
