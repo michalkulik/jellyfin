@@ -434,6 +434,10 @@ namespace Emby.Server.Implementations
                 throw new FfmpegException("Failed to find valid ffmpeg");
             }
 
+            // The hardware detection knows which device each acceleration method needs, so store it
+            // in the configuration. Without this the settings page would ask for it manually.
+            Resolve<IHardwareAccelerationDetector>().ApplyDetectedDevices();
+
             Logger.LogInformation("ServerId: {ServerId}", SystemId);
             Logger.LogInformation("Core startup complete");
             CoreStartupHasCompleted = true;

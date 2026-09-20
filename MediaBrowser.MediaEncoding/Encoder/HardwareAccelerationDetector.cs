@@ -66,6 +66,39 @@ public sealed class HardwareAccelerationDetector : IHardwareAccelerationDetector
         }
     }
 
+    /// <inheritdoc />
+    public void ApplyDetectedDevices()
+    {
+        var options = _configurationManager.GetEncodingOptions();
+        var changed = false;
+
+        foreach (var option in GetAvailableOptions())
+        {
+            if (string.IsNullOrEmpty(option.Device))
+            {
+                continue;
+            }
+
+            switch (option.Type)
+            {
+                case HardwareAccelerationType.vaapi when string.IsNullOrEmpty(options.VaapiDevice):
+                    options.VaapiDevice = option.Device;
+                    changed = true;
+                    break;
+                case HardwareAccelerationType.qsv when string.IsNullOrEmpty(options.QsvDevice):
+                    options.QsvDevice = option.Device;
+                    changed = true;
+                    break;
+            }
+        }
+
+        if (changed)
+        {
+            _configurationManager.SaveConfiguration("encoding", options);
+            _logger.LogInformation("Filled the detected hardware acceleration devices into the encoding configuration");
+        }
+    }
+
     /// <summary>
     /// Maps a PCI vendor id to the hardware acceleration methods that vendor can provide.
     /// </summary>

@@ -20,4 +20,15 @@ public interface IHardwareAccelerationDetector
     /// </remarks>
     /// <returns>The detected hardware acceleration methods.</returns>
     IReadOnlyList<HardwareAccelerationOption> GetAvailableOptions();
+
+    /// <summary>
+    /// Fills the device of the hardware acceleration methods that were detected but have no device
+    /// configured yet.
+    /// </summary>
+    /// <remarks>
+    /// The device is part of the hardware detection, so the user should not have to type it. Only
+    /// empty fields are filled, an explicitly configured device is never overwritten. Called once
+    /// during startup, so the configuration is correct even when the settings page was never opened.
+    /// </remarks>
+    void ApplyDetectedDevices();
 }
