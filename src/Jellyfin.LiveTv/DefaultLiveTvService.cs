@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
@@ -963,36 +964,123 @@ namespace Jellyfin.LiveTv
 
         private bool IsProgramAlreadyInLibrary(TimerInfo program)
         {
-            if ((program.EpisodeNumber.HasValue && program.SeasonNumber.HasValue) || !string.IsNullOrWhiteSpace(program.EpisodeTitle))
+            var hasNumbers = program.EpisodeNumber.HasValue && program.SeasonNumber.HasValue;
+            var episodeTitle = program.EpisodeTitle;
+
+            if (!hasNumbers && string.IsNullOrWhiteSpace(episodeTitle))
             {
-                var seriesIds = _libraryManager.GetItemIds(
+                return false;
+            }
+
+            // Every library is searched, not just the recordings folder, so recordings that were moved
+            // into a regular library are still recognised as present.
+            var seriesIds = GetSeriesIdsForProgram(program);
+            if (seriesIds.Length == 0)
+            {
+                return false;
+            }
+
+            if (hasNumbers
+                && HasEpisodeWithNumber(seriesIds, program.SeasonNumber!.Value, program.EpisodeNumber!.Value))
+            {
+                _logger.LogDebug(
+                    "Episode {Season}x{Episode} of {Series} is already in the library",
+                    program.SeasonNumber,
+                    program.EpisodeNumber,
+                    program.Name);
+
+                return true;
+            }
+
+            // Guide data frequently carries only a title and no season/episode numbers (many XMLTV
+            // feeds, including the ones used here), which used to make this check silently useless:
+            // every episode was recorded again once it had been moved out of the recordings folder.
+            if (string.IsNullOrWhiteSpace(episodeTitle)
+                || EpisodeTitleMatcher.IsSameAsSeriesName(program.Name, episodeTitle))
+            {
+                return false;
+            }
+
+            if (HasEpisodeWithTitle(seriesIds, episodeTitle))
+            {
+                _logger.LogInformation(
+                    "Episode \"{EpisodeTitle}\" of {Series} is already in the library, skipping the recording",
+                    episodeTitle,
+                    program.Name);
+
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Series in every library that belong to the given program, matched by name.
+        /// </summary>
+        private Guid[] GetSeriesIdsForProgram(TimerInfo program)
+        {
+            var exact = _libraryManager.GetItemIds(
+                new InternalItemsQuery
+                {
+                    IncludeItemTypes = new[] { BaseItemKind.Series },
+                    Name = program.Name
+                }).ToArray();
+
+            if (exact.Length > 0)
+            {
+                return exact;
+            }
+
+            // Library names often differ from the guide name by punctuation, a trailing "+", a year or
+            // a whole extra word, and the folder on disk may use yet another name, so the series are
+            // compared on their name and on their folder name.
+            return _libraryManager.GetItemList(
                     new InternalItemsQuery
                     {
-                        IncludeItemTypes = new[] { BaseItemKind.Series },
-                        Name = program.Name
-                    }).ToArray();
+                        IncludeItemTypes = new[] { BaseItemKind.Series }
+                    })
+                .Where(series => EpisodeTitleMatcher.IsSameSeries(series.Name, series.Path, program.Name))
+                .Select(series => series.Id)
+                .ToArray();
+        }
 
-                if (seriesIds.Length == 0)
+        private bool HasEpisodeWithNumber(Guid[] seriesIds, int seasonNumber, int episodeNumber)
+        {
+            var result = _libraryManager.GetItemIds(new InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { BaseItemKind.Episode },
+                ParentIndexNumber = seasonNumber,
+                IndexNumber = episodeNumber,
+                AncestorIds = seriesIds,
+                IsVirtualItem = false,
+                Limit = 1
+            });
+
+            return result.Count > 0;
+        }
+
+        /// <summary>
+        /// Whether one of the episodes of the series carries the given title. Both the episode name and
+        /// the file name are inspected, because recorded episodes are stored under their file name
+        /// (for example "Reksio 2026_02_05_10_55_00 - Reksiowa wiosna") rather than under a clean title.
+        /// </summary>
+        private bool HasEpisodeWithTitle(Guid[] seriesIds, string episodeTitle)
+        {
+            var episodes = _libraryManager.GetItemList(
+                new InternalItemsQuery
                 {
-                    return false;
-                }
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    AncestorIds = seriesIds,
+                    IsVirtualItem = false
+                });
 
-                if (program.EpisodeNumber.HasValue && program.SeasonNumber.HasValue)
+            // The episode name and the file name are both inspected, because recorded episodes are
+            // stored under their file name rather than under a clean title.
+            foreach (var episode in episodes)
+            {
+                if (EpisodeTitleMatcher.MatchesEpisode(episode.Name, episode.Path, episodeTitle))
                 {
-                    var result = _libraryManager.GetItemIds(new InternalItemsQuery
-                    {
-                        IncludeItemTypes = new[] { BaseItemKind.Episode },
-                        ParentIndexNumber = program.SeasonNumber.Value,
-                        IndexNumber = program.EpisodeNumber.Value,
-                        AncestorIds = seriesIds,
-                        IsVirtualItem = false,
-                        Limit = 1
-                    });
-
-                    if (result.Count > 0)
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
 
