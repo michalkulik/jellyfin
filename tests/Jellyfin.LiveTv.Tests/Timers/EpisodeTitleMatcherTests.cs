@@ -78,12 +78,36 @@ namespace Jellyfin.LiveTv.Tests.Timers
             Assert.Equal(EpisodeTitleMatcher.NormalizeName(first), EpisodeTitleMatcher.NormalizeName(second));
         }
 
+        [Fact]
+        public static void NormalizeName_KeepsThePlusAsAWord()
+        {
+            // The trailing "+" marks a spin-off, so it must survive normalization.
+            Assert.Equal("klub myszki miki plus", EpisodeTitleMatcher.NormalizeName("Klub Myszki Miki+"));
+            Assert.Equal("klub myszki miki plus", EpisodeTitleMatcher.NormalizeName("Klub Myszki Miki Plus"));
+        }
+
+        [Fact]
+        public static void NormalizeName_DoesNotMergeASeriesWithItsSpinOff()
+        {
+            // Two different series in this library, they must never compare equal.
+            Assert.NotEqual(
+                EpisodeTitleMatcher.NormalizeName("Klub przyjaciół Myszki Miki"),
+                EpisodeTitleMatcher.NormalizeName("Klub przyjaciół Myszki Miki+"));
+        }
+
         [Theory]
         // The library may call a series differently from the guide.
         [InlineData("Reksio", "/media/emby/seriale-dzieci/Reksio", "Reksio", true)]
+        // The folder holds the moved recordings under the guide name while the series itself was
+        // renamed by metadata to the spin-off title, so the folder name has to be considered.
         [InlineData("Klub przyjaciół Myszki Miki+", "/media/emby/seriale-dzieci/Klub Myszki Miki Plus", "Klub Myszki Miki Plus", true)]
         // ... or the folder does, while the series name is the one from the guide.
         [InlineData("Klub Myszki Miki Plus", "/media/emby_recordings/Klub Myszki Miki Plus", "Klub Myszki Miki Plus", true)]
+        // The other spin-off must not be treated as the same series.
+        [InlineData("Klub przyjaciół Myszki Miki", "/media/emby_recordings/Klub przyjaciół Myszki Miki", "Klub Myszki Miki Plus", false)]
+        [InlineData("Klub przyjaciół Myszki Miki+", "/media/emby/seriale-dzieci/Klub Myszki Miki Plus", "Klub przyjaciół Myszki Miki", false)]
+        // A season is stored as a number, "Superkoty 2" is a different series from "Superkoty".
+        [InlineData("Superkoty 2", "/media/emby_recordings/Superkoty 2", "Superkoty", false)]
         [InlineData("Reksio", "/media/emby/seriale-dzieci/Reksio", "Superkoty", false)]
         [InlineData("Reksio", "/media/emby/seriale-dzieci/Reksio", null, false)]
         public static void IsSameSeries_MatchesNameOrFolder(string seriesName, string seriesPath, string? guideName, bool expected)

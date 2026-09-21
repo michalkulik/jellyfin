@@ -96,6 +96,12 @@ namespace Jellyfin.LiveTv.Timers
         /// Lowercases a name and reduces every run of characters that are not letters or digits to a
         /// single space, so names that only differ by punctuation compare equal.
         /// </summary>
+        /// <remarks>
+        /// A "+" is kept as the word "plus" instead of being dropped. It marks a distinct spin-off in
+        /// this library ("Klub przyjaciół Myszki Miki+" against "Klub przyjaciół Myszki Miki"), so
+        /// treating it as punctuation would make two different series compare equal and could skip the
+        /// recording of the wrong show.
+        /// </remarks>
         /// <param name="value">Value to normalize.</param>
         /// <returns>The normalized name, never null.</returns>
         public static string NormalizeName(string? value)
@@ -106,23 +112,33 @@ namespace Jellyfin.LiveTv.Timers
             }
 
             var builder = new StringBuilder(value.Length);
-            var pendingSpace = false;
+            var pendingSeparator = false;
 
             foreach (var character in value)
             {
                 if (char.IsLetterOrDigit(character))
                 {
-                    if (pendingSpace && builder.Length > 0)
+                    if (pendingSeparator && builder.Length > 0)
                     {
                         builder.Append(' ');
                     }
 
                     builder.Append(char.ToLowerInvariant(character));
-                    pendingSpace = false;
+                    pendingSeparator = false;
+                }
+                else if (character == '+')
+                {
+                    if (builder.Length > 0)
+                    {
+                        builder.Append(' ');
+                    }
+
+                    builder.Append("plus");
+                    pendingSeparator = true;
                 }
                 else
                 {
-                    pendingSpace = true;
+                    pendingSeparator = true;
                 }
             }
 
