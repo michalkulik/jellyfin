@@ -134,6 +134,37 @@ public class SubtitleController : BaseJellyfinApiController
     }
 
     /// <summary>
+    /// Gets the subtitle languages the library of an item is configured to download.
+    /// </summary>
+    /// <remarks>
+    /// The languages are configured per library. They are otherwise only exposed to administrators
+    /// through the virtual folder list, so a client that wants to offer exactly the configured
+    /// languages for a remote subtitle search reads them here.
+    /// </remarks>
+    /// <param name="itemId">The item id.</param>
+    /// <response code="200">Languages returned.</response>
+    /// <response code="404">Item not found.</response>
+    /// <returns>The languages configured for the library of the item, empty when none are set.</returns>
+    [HttpGet("Items/{itemId}/SubtitleDownloadLanguages")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult<IEnumerable<string>> GetSubtitleDownloadLanguages(
+        [FromRoute, Required] Guid itemId)
+    {
+        var item = _libraryManager.GetItemById<BaseItem>(itemId, User.GetUserId());
+        if (item is null)
+        {
+            return NotFound();
+        }
+
+        var languages = _libraryManager.GetLibraryOptions(item).SubtitleDownloadLanguages
+            ?? Array.Empty<string>();
+
+        return Ok<IEnumerable<string>>(languages);
+    }
+
+    /// <summary>
     /// Downloads a remote subtitle.
     /// </summary>
     /// <param name="itemId">The item id.</param>
