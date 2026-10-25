@@ -331,11 +331,35 @@ namespace MediaBrowser.Providers.Plugins.Tmdb
 
             await EnsureClientConfigAsync().ConfigureAwait(false);
 
+            var normalizedLanguage = TmdbUtils.NormalizeLanguage(language, countryCode);
+
             person = await _tmDbClient.GetPersonAsync(
                 personTmdbId,
-                TmdbUtils.NormalizeLanguage(language, countryCode),
+                normalizedLanguage,
                 PersonMethods.Images | PersonMethods.ExternalIds,
                 cancellationToken).ConfigureAwait(false);
+
+            // TMDb leaves the biography empty for people that have no translation in the requested
+            // language instead of falling back to the original text itself. Without the fallback below
+            // every person page in a non-English library shows no description at all, so the English
+            // (original) biography is fetched and used when the localized one is missing.
+            if (person is not null
+                && string.IsNullOrWhiteSpace(person.Biography)
+                && !string.Equals(normalizedLanguage, "en", StringComparison.OrdinalIgnoreCase))
+            {
+                var original = await _tmDbClient.GetPersonAsync(
+                    personTmdbId,
+                    "en",
+                    PersonMethods.Images | PersonMethods.ExternalIds,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (original is not null)
+                {
+                    person.Biography = original.Biography;
+                    person.PlaceOfBirth ??= original.PlaceOfBirth;
+                    person.Homepage ??= original.Homepage;
+                }
+            }
 
             if (person is not null)
             {

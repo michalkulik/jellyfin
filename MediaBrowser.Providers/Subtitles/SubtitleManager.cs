@@ -402,7 +402,19 @@ namespace MediaBrowser.Providers.Subtitles
 
             _directoryService.Invalidate(path);
 
-            return item.RefreshMetadata(CancellationToken.None);
+            // Only the media information has to be refreshed, so that the deleted stream disappears from
+            // the item. A refresh in the default mode also runs the subtitle downloaders, and a library
+            // that is set up to fetch subtitles in certain languages immediately downloads the file the
+            // user just removed again (it then reappears in the subtitles list). Validation only still
+            // runs the probe, because deleting an external file makes it report a change, but leaves the
+            // downloaders out of the refresh.
+            var options = new MetadataRefreshOptions(_directoryService)
+            {
+                MetadataRefreshMode = MetadataRefreshMode.ValidationOnly,
+                ImageRefreshMode = MetadataRefreshMode.ValidationOnly
+            };
+
+            return item.RefreshMetadata(options, CancellationToken.None);
         }
 
         /// <inheritdoc />

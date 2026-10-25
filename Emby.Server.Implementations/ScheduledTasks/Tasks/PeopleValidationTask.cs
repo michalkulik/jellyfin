@@ -196,11 +196,16 @@ public class PeopleValidationTask : IScheduledTask, IConfigurableScheduledTask
             peopleIds = await context.BaseItems
                 .AsNoTracking()
                 .Where(b => b.Type == personTypeName)
-                .Where(b => b.DateLastRefreshed == null || b.DateLastRefreshed < thirtyDaysAgo)
                 .Where(b =>
-                    !b.Images!.Any(i => i.ImageType == ImageInfoImageType.Primary) ||
-                    string.IsNullOrEmpty(b.Overview))
-                .OrderBy(b => b.Id)
+                    // A missing image is only worth a new lookup once the person is due again, but an
+                    // empty overview is retried on every run: the biography is the text the person page
+                    // shows, and a locale without a translation used to leave it empty even though the
+                    // original one exists.
+                    string.IsNullOrEmpty(b.Overview) ||
+                    ((b.DateLastRefreshed == null || b.DateLastRefreshed < thirtyDaysAgo)
+                        && !b.Images!.Any(i => i.ImageType == ImageInfoImageType.Primary)))
+                .OrderBy(b => b.DateLastRefreshed ?? DateTime.MinValue)
+                .ThenBy(b => b.Id)
                 .Select(b => b.Id)
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
