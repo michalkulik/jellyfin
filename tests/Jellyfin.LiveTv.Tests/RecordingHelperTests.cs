@@ -96,6 +96,55 @@ namespace Jellyfin.LiveTv.Tests
                    EpisodeTitle = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor"
                });
 
+            // Guide data such as epg.ovh often carries only the episode number, without a season.
+            data.Add(
+                "Była sobie Ziemia 2026_11_23_10_25_00 - Bioróżnorodność E16",
+                new TimerInfo
+                {
+                    Name = "Była sobie Ziemia",
+                    StartDate = new DateTime(2026, 11, 23, 10, 25, 0, DateTimeKind.Local),
+                    IsProgramSeries = true,
+                    EpisodeNumber = 16,
+                    EpisodeTitle = "Bioróżnorodność"
+                });
+
+            data.Add(
+                "Była sobie Ziemia 2026-11-20 - Bioróżnorodność E16",
+                new TimerInfo
+                {
+                    Name = "Była sobie Ziemia",
+                    StartDate = new DateTime(2026, 11, 23, 10, 25, 0, DateTimeKind.Local),
+                    IsProgramSeries = true,
+                    EpisodeNumber = 16,
+                    OriginalAirDate = new DateTime(2026, 11, 20),
+                    EpisodeTitle = "Bioróżnorodność"
+                });
+
+            // A full season/episode pair keeps the existing "SxxExx" form.
+            data.Add(
+                "Była sobie Ziemia S01E16 Bioróżnorodność",
+                new TimerInfo
+                {
+                    Name = "Była sobie Ziemia",
+                    StartDate = new DateTime(2026, 11, 23, 10, 25, 0, DateTimeKind.Local),
+                    IsProgramSeries = true,
+                    SeasonNumber = 1,
+                    EpisodeNumber = 16,
+                    EpisodeTitle = "Bioróżnorodność"
+                });
+
+            // The episode number survives even when the title is too long for the file name.
+            data.Add(
+                "Lorem ipsum dolor sit amet: consect 2018_12_06_21_06_00 E16",
+                new TimerInfo
+                {
+                    Name = "Lorem ipsum dolor sit amet: consect",
+                    IsProgramSeries = true,
+                    StartDate = new DateTime(2018, 12, 6, 21, 6, 0, DateTimeKind.Local),
+                    EpisodeNumber = 16,
+                    EpisodeTitle = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor"
+                });
+
             return data;
         }
 

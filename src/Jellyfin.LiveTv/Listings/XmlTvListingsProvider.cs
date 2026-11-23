@@ -8,6 +8,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,6 +33,32 @@ namespace Jellyfin.LiveTv.Listings
     {
         private static readonly TimeSpan _maxCacheAge = TimeSpan.FromHours(1);
         private static readonly TimeSpan _downloadTimeout = TimeSpan.FromMinutes(15);
+
+        // On-screen (<episode-num system="onscreen">) notations used by providers such as epg.ovh:
+        // "S2E23", "S2 E23", "S2E23/26", "S3E12-ost.", "S1E1-4".
+        private static readonly Regex _onscreenSeasonEpisodeRegex = new(
+            @"^[Ss](?<season>\d+)\s*[Ee]\s*(?<episode>\d+)(?:[/\-].*)?$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        // "E16", "E3/26", "E2-ost.", "E3-9".
+        private static readonly Regex _onscreenEpisodeRegex = new(
+            @"^[Ee]\s*(?<episode>\d+)(?:[\s/\-].*)?$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        // "2x23", "02 x 23".
+        private static readonly Regex _onscreenSeasonEpisodeXRegex = new(
+            @"^(?<season>\d+)\s*[xX]\s*(?<episode>\d+)(?:[/\-].*)?$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        // A marker embedded in a longer code, e.g. "EAFNB_S26E20".
+        private static readonly Regex _onscreenEmbeddedSeasonEpisodeRegex = new(
+            @"[Ss](?<season>\d+)\s*[Ee](?<episode>\d+)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        // A season without an episode number, e.g. "S1".
+        private static readonly Regex _onscreenSeasonRegex = new(
+            @"^[Ss](?<season>\d+)$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private readonly IServerConfigurationManager _config;
         private readonly IHttpClientFactory _httpClientFactory;
@@ -277,17 +304,16 @@ namespace Jellyfin.LiveTv.Listings
 
             // Some XMLTV sources (e.g. epg.ovh) only provide episode numbers through
             // <episode-num system="onscreen">S1E3</episode-num>, which the XMLTV reader ignores.
-            // The reader also ignores programmes that carry no <sub-title> at all, even though the
-            // on-screen episode number clearly marks them as series episodes. Fall back to the
-            // separately parsed on-screen data in that case.
+            // Fall back to the separately parsed on-screen data whenever the reader did not supply
+            // the numbers itself, so series episodes (with or without a <sub-title>) keep their
+            // season and episode numbers.
             var seasonNumber = program.Episode?.Series;
             var episodeNumber = program.Episode?.Episode;
 
-            if (episodeNumber is null
-                && onscreenEpisodes.TryGetValue(BuildProgramKey(program.ChannelId, program.StartDate), out var onscreenEpisode))
+            if (onscreenEpisodes.TryGetValue(BuildProgramKey(program.ChannelId, program.StartDate), out var onscreenEpisode))
             {
-                seasonNumber = onscreenEpisode.Season;
-                episodeNumber = onscreenEpisode.Episode;
+                seasonNumber ??= onscreenEpisode.Season;
+                episodeNumber ??= onscreenEpisode.Episode;
             }
 
             var isSeries = episodeNumber is not null || !string.IsNullOrEmpty(episodeTitle);
@@ -323,19 +349,28 @@ namespace Jellyfin.LiveTv.Listings
 
             if (string.IsNullOrWhiteSpace(program.ProgramId))
             {
-                string uniqueString = (program.Title ?? string.Empty) + (episodeTitle ?? string.Empty);
+                // The numbers are appended to the title instead of replacing it: a show id built from
+                // the episode number alone would make every series reporting "E16" look like the same
+                // show, and the duplicate detection would cancel all but one of those recordings.
+                // The episode title is only used when there are no numbers, so the same episode aired
+                // on several channels (with differing sub-titles) still collapses into one recording.
+                var uniqueString = new StringBuilder().Append(program.Title);
 
                 if (programInfo.SeasonNumber.HasValue)
                 {
-                    uniqueString = "-" + programInfo.SeasonNumber.Value.ToString(CultureInfo.InvariantCulture);
+                    uniqueString.Append("|S").Append(programInfo.SeasonNumber.Value.ToString(CultureInfo.InvariantCulture));
                 }
 
                 if (programInfo.EpisodeNumber.HasValue)
                 {
-                    uniqueString = "-" + programInfo.EpisodeNumber.Value.ToString(CultureInfo.InvariantCulture);
+                    uniqueString.Append("|E").Append(programInfo.EpisodeNumber.Value.ToString(CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    uniqueString.Append('|').Append(episodeTitle);
                 }
 
-                programInfo.ShowId = uniqueString.GetMD5().ToString("N", CultureInfo.InvariantCulture);
+                programInfo.ShowId = uniqueString.ToString().GetMD5().ToString("N", CultureInfo.InvariantCulture);
 
                 // If we don't have valid episode info, assume it's a unique program, otherwise recordings might be skipped
                 if (programInfo.IsSeries
@@ -538,9 +573,10 @@ namespace Jellyfin.LiveTv.Listings
         }
 
         /// <summary>
-        /// Reads the on-screen (<c>system="onscreen"</c>) episode numbers of every programme that has no
-        /// <c>&lt;sub-title&gt;</c>, using a streaming reader so the file is never fully loaded into memory.
-        /// Programmes with a sub-title are already recognised as series by the XMLTV reader.
+        /// Reads the on-screen (<c>system="onscreen"</c>) episode numbers of every programme, using a
+        /// streaming reader so the file is never fully loaded into memory. The XMLTV reader only
+        /// understands the <c>xmltv_ns</c> and <c>SxxExx</c> systems, so the on-screen values have to be
+        /// parsed separately to keep series episodes grouped and numbered.
         /// </summary>
         /// <param name="path">Path to the (uncompressed) XMLTV file.</param>
         /// <returns>A map of programme key to its parsed season/episode numbers.</returns>
@@ -581,27 +617,47 @@ namespace Jellyfin.LiveTv.Listings
                 {
                     var element = XElement.Load(subtree);
 
-                    // A sub-title already marks the programme as a series for the XMLTV reader.
-                    if (element.Element("sub-title") is not null)
+                    onscreen = element.Elements("episode-num")
+                        .FirstOrDefault(e => string.Equals((string?)e.Attribute("system"), "onscreen", StringComparison.OrdinalIgnoreCase));
+
+                    if (onscreen is null)
                     {
                         continue;
                     }
 
-                    onscreen = element.Elements("episode-num")
-                        .FirstOrDefault(e => string.Equals((string?)e.Attribute("system"), "onscreen", StringComparison.OrdinalIgnoreCase));
-                }
+                    // A bare number in the on-screen field is ambiguous: providers also use it as an
+                    // event id for sports and magazines (e.g. "110" for a match), so it is only read as
+                    // an episode number when the programme is already known to be a series, i.e. it
+                    // carries a sub-title or a series category. Explicit "E16"/"S1E2" markers are
+                    // trusted either way.
+                    ParseOnscreenEpisode(
+                        onscreen.Value,
+                        element.Element("sub-title") is not null || HasSeriesCategory(element),
+                        out var season,
+                        out var episode);
 
-                if (onscreen is null)
-                {
-                    continue;
+                    if (season is not null || episode is not null)
+                    {
+                        result[BuildProgramKey(channelId, startOffset.Value)] = (season, episode);
+                    }
                 }
-
-                ParseOnscreenEpisode(onscreen.Value, out var season, out var episode);
-                result[BuildProgramKey(channelId, startOffset.Value)] = (season, episode);
             }
 
             return result;
         }
+
+        /// <summary>
+        /// Whether one of the programme categories marks it as a series (e.g. "serial kryminalny").
+        /// </summary>
+        /// <param name="element">The <c>&lt;programme&gt;</c> element.</param>
+        /// <returns><c>true</c> when a series category is present.</returns>
+        private static bool HasSeriesCategory(XElement element)
+            => element.Elements("category")
+                .Select(c => c.Value)
+                .Any(c => c.Contains("serial", StringComparison.OrdinalIgnoreCase)
+                    || c.Contains("telenowela", StringComparison.OrdinalIgnoreCase)
+                    || c.Contains("anime", StringComparison.OrdinalIgnoreCase)
+                    || c.Contains("doku-soap", StringComparison.OrdinalIgnoreCase));
 
         /// <summary>
         /// Parses the subset of XMLTV date formats ("yyyyMMddHHmmss[ +HHMM]") used by listings providers.
@@ -651,12 +707,16 @@ namespace Jellyfin.LiveTv.Listings
         }
 
         /// <summary>
-        /// Parses common on-screen episode notations such as "S2E23" or "2x23".
+        /// Parses common on-screen episode notations such as "S2E23", "2x23", "E16", "S1E2/6" or
+        /// "S3E12-ost.".
         /// </summary>
         /// <param name="value">The on-screen episode-num value.</param>
+        /// <param name="allowBareEpisodeNumber">
+        /// Whether a value that carries no season/episode marker may be read as an episode number.
+        /// </param>
         /// <param name="season">The parsed season number, if any.</param>
         /// <param name="episode">The parsed episode number, if any.</param>
-        private static void ParseOnscreenEpisode(string? value, out int? season, out int? episode)
+        private static void ParseOnscreenEpisode(string? value, bool allowBareEpisodeNumber, out int? season, out int? episode)
         {
             season = null;
             episode = null;
@@ -667,26 +727,62 @@ namespace Jellyfin.LiveTv.Listings
             }
 
             var trimmed = value.Trim();
-            var match = Regex.Match(trimmed, @"^[Ss]?(?<season>\d+)\s*[Ee](?<episode>\d+)$");
-            if (!match.Success)
-            {
-                match = Regex.Match(trimmed, @"^(?<season>\d+)\s*[xX]\s*(?<episode>\d+)$");
-            }
 
-            if (!match.Success)
+            // "S2E23", "S01 E023", "E2 - ost.", "S1E2/6", "S3E12-ost.", "E3-9"
+            var match = _onscreenSeasonEpisodeRegex.Match(trimmed);
+            if (match.Success)
             {
+                season = ParseOnscreenNumber(match.Groups["season"]);
+                episode = ParseOnscreenNumber(match.Groups["episode"]);
                 return;
             }
 
-            if (int.TryParse(match.Groups["season"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var seasonNumber))
+            // "2x23", "02 x 23"
+            match = _onscreenSeasonEpisodeXRegex.Match(trimmed);
+            if (match.Success)
             {
-                season = seasonNumber;
+                season = ParseOnscreenNumber(match.Groups["season"]);
+                episode = ParseOnscreenNumber(match.Groups["episode"]);
+                return;
             }
 
-            if (int.TryParse(match.Groups["episode"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var episodeNumber))
+            // Markers embedded in a longer code, e.g. "EAFNB_S26E20".
+            match = _onscreenEmbeddedSeasonEpisodeRegex.Match(trimmed);
+            if (match.Success)
             {
-                episode = episodeNumber;
+                season = ParseOnscreenNumber(match.Groups["season"]);
+                episode = ParseOnscreenNumber(match.Groups["episode"]);
+                return;
+            }
+
+            // "E16" (the episode number only; the season is unknown).
+            match = _onscreenEpisodeRegex.Match(trimmed);
+            if (match.Success)
+            {
+                episode = ParseOnscreenNumber(match.Groups["episode"]);
+                return;
+            }
+
+            // A season without an episode number ("S1").
+            match = _onscreenSeasonRegex.Match(trimmed);
+            if (match.Success)
+            {
+                season = ParseOnscreenNumber(match.Groups["season"]);
+                return;
+            }
+
+            // Bare numbers are ambiguous: providers also use them as event ids (sports, magazines),
+            // so they are only read for programmes the caller knows to be series episodes.
+            if (allowBareEpisodeNumber && trimmed.All(char.IsAsciiDigit) && trimmed.Length <= 4)
+            {
+                episode = ParseOnscreenNumber(trimmed);
             }
         }
+
+        private static int? ParseOnscreenNumber(string value)
+            => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var number) ? number : null;
+
+        private static int? ParseOnscreenNumber(Group group)
+            => group.Success ? ParseOnscreenNumber(group.Value) : null;
     }
 }

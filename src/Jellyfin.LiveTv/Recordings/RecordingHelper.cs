@@ -14,6 +14,7 @@ namespace Jellyfin.LiveTv.Recordings
             if (info.IsProgramSeries)
             {
                 var addHyphen = true;
+                var episodeSuffix = string.Empty;
 
                 if (info.SeasonNumber.HasValue && info.EpisodeNumber.HasValue)
                 {
@@ -24,20 +25,31 @@ namespace Jellyfin.LiveTv.Recordings
                         info.EpisodeNumber.Value.ToString("00", CultureInfo.InvariantCulture));
                     addHyphen = false;
                 }
-                else if (info.OriginalAirDate.HasValue)
+                else
                 {
-                    if (info.OriginalAirDate.Value.Date.Equals(info.StartDate.Date))
+                    if (info.OriginalAirDate.HasValue)
                     {
-                        name += " " + GetDateString(info.StartDate);
+                        if (info.OriginalAirDate.Value.Date.Equals(info.StartDate.Date))
+                        {
+                            name += " " + GetDateString(info.StartDate);
+                        }
+                        else
+                        {
+                            name += " " + info.OriginalAirDate.Value.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                        }
                     }
                     else
                     {
-                        name += " " + info.OriginalAirDate.Value.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                        name += " " + GetDateString(info.StartDate);
                     }
-                }
-                else
-                {
-                    name += " " + GetDateString(info.StartDate);
+
+                    if (info.EpisodeNumber.HasValue)
+                    {
+                        // Guide data often carries only the episode number (e.g. epg.ovh reports "E16"
+                        // without any season). The file name parser reads "E16" only as the last token
+                        // of the name, so the marker is appended at the very end, after the title.
+                        episodeSuffix = " E" + info.EpisodeNumber.Value.ToString("00", CultureInfo.InvariantCulture);
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(info.EpisodeTitle))
@@ -48,12 +60,21 @@ namespace Jellyfin.LiveTv.Recordings
                         tmpName += " -";
                     }
 
-                    tmpName += " " + info.EpisodeTitle;
+                    tmpName += " " + info.EpisodeTitle + episodeSuffix;
                     // Since the filename will be used with file ext. (.mp4, .ts, etc)
                     if (Encoding.UTF8.GetByteCount(tmpName) < 250)
                     {
                         name = tmpName;
                     }
+                    else
+                    {
+                        // Keep the episode number even when the title is too long for the file name.
+                        name += episodeSuffix;
+                    }
+                }
+                else
+                {
+                    name += episodeSuffix;
                 }
             }
             else if (info.IsMovie && info.ProductionYear is not null)
