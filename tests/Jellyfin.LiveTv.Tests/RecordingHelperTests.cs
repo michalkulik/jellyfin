@@ -97,8 +97,9 @@ namespace Jellyfin.LiveTv.Tests
                });
 
             // Guide data such as epg.ovh often carries only the episode number, without a season.
+            // The number already identifies the episode, so the recording date is left out.
             data.Add(
-                "Była sobie Ziemia 2026_11_23_10_25_00 - Bioróżnorodność E16",
+                "Była sobie Ziemia - Bioróżnorodność E16",
                 new TimerInfo
                 {
                     Name = "Była sobie Ziemia",
@@ -109,7 +110,7 @@ namespace Jellyfin.LiveTv.Tests
                 });
 
             data.Add(
-                "Była sobie Ziemia 2026-11-20 - Bioróżnorodność E16",
+                "Była sobie Ziemia - Bioróżnorodność E16",
                 new TimerInfo
                 {
                     Name = "Była sobie Ziemia",
@@ -118,6 +119,16 @@ namespace Jellyfin.LiveTv.Tests
                     EpisodeNumber = 16,
                     OriginalAirDate = new DateTime(2026, 11, 20),
                     EpisodeTitle = "Bioróżnorodność"
+                });
+
+            data.Add(
+                "Była sobie Ziemia E16",
+                new TimerInfo
+                {
+                    Name = "Była sobie Ziemia",
+                    StartDate = new DateTime(2026, 11, 23, 10, 25, 0, DateTimeKind.Local),
+                    IsProgramSeries = true,
+                    EpisodeNumber = 16
                 });
 
             // A full season/episode pair keeps the existing "SxxExx" form.
@@ -135,7 +146,7 @@ namespace Jellyfin.LiveTv.Tests
 
             // The episode number survives even when the title is too long for the file name.
             data.Add(
-                "Lorem ipsum dolor sit amet: consect 2018_12_06_21_06_00 E16",
+                "Lorem ipsum dolor sit amet: consect E16",
                 new TimerInfo
                 {
                     Name = "Lorem ipsum dolor sit amet: consect",

@@ -25,6 +25,15 @@ namespace Jellyfin.LiveTv.Recordings
                         info.EpisodeNumber.Value.ToString("00", CultureInfo.InvariantCulture));
                     addHyphen = false;
                 }
+                else if (info.EpisodeNumber.HasValue)
+                {
+                    // Guide data often carries only the episode number (e.g. epg.ovh reports "E16"
+                    // without any season). The date is only a fallback for programmes that cannot be
+                    // told apart by their numbers, so it is omitted here: the number already identifies
+                    // the episode. The file name parser only reads "E16" as the last token of the name,
+                    // so the marker is appended at the very end, after the episode title.
+                    episodeSuffix = " E" + info.EpisodeNumber.Value.ToString("00", CultureInfo.InvariantCulture);
+                }
                 else
                 {
                     if (info.OriginalAirDate.HasValue)
@@ -41,14 +50,6 @@ namespace Jellyfin.LiveTv.Recordings
                     else
                     {
                         name += " " + GetDateString(info.StartDate);
-                    }
-
-                    if (info.EpisodeNumber.HasValue)
-                    {
-                        // Guide data often carries only the episode number (e.g. epg.ovh reports "E16"
-                        // without any season). The file name parser reads "E16" only as the last token
-                        // of the name, so the marker is appended at the very end, after the title.
-                        episodeSuffix = " E" + info.EpisodeNumber.Value.ToString("00", CultureInfo.InvariantCulture);
                     }
                 }
 
